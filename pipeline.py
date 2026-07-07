@@ -41,10 +41,12 @@ def load_data():
     return transactions, tickets, controls
 
 
-def run_generate(transactions, tickets) -> list[dict]:
+def run_generate(transactions, tickets, limit: int = 0) -> list[dict]:
     policy_store = PolicyStore(str(DATA / "policy.pdf"))
     retriever = TicketRetriever(tickets)
     holdout = [t for t in tickets if t.split == "holdout"]
+    if limit:
+        holdout = holdout[:limit]
 
     generated = []
     for t in holdout:
@@ -60,10 +62,12 @@ def run_generate(transactions, tickets) -> list[dict]:
     return generated
 
 
-def run_evaluate(transactions, tickets, controls) -> list[dict]:
+def run_evaluate(transactions, tickets, controls, limit: int = 0) -> list[dict]:
     policy_store = PolicyStore(str(DATA / "policy.pdf"))
     tickets_by_id = {t.ticket_id: t for t in tickets}
     generated = json.loads((RESULTS / "generated_replies.json").read_text())
+    if limit:
+        controls = controls[:limit]
 
     results = []
     for g in generated:
@@ -124,6 +128,11 @@ def main():
     parser.add_argument("--generate", action="store_true")
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--validate", action="store_true")
+    parser.add_argument(
+        "--limit", type=int, default=0,
+        help="Trial mode: only the first N holdout tickets and N controls "
+        "(--limit 1 => exactly 5 LLM calls: 1 generation + 2x2 judge calls).",
+    )
     args = parser.parse_args()
     if not any(vars(args).values()):
         parser.print_help()
@@ -134,10 +143,10 @@ def main():
     results = None
     if args.all or args.generate:
         console.rule("[bold]1. Generate")
-        run_generate(transactions, tickets)
+        run_generate(transactions, tickets, limit=args.limit)
     if args.all or args.evaluate:
         console.rule("[bold]2. Evaluate")
-        results = run_evaluate(transactions, tickets, controls)
+        results = run_evaluate(transactions, tickets, controls, limit=args.limit)
     if args.all or args.validate:
         console.rule("[bold]3. Validate metric")
         report = run_validate()

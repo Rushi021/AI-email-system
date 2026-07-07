@@ -37,7 +37,7 @@ Write the reply."""
 COMPLIANCE_JUDGE_SYSTEM = """You are a strict policy-compliance auditor for customer-support replies.
 
 You are given policy excerpts, a customer's transaction record, the incoming email, and a reply that was sent. Working ONLY from the policy excerpts and transaction data:
-1. Decide what remedy the policy actually requires for this case, and cite the rule identifier. Check escalation/review rules first — they can override an otherwise-applicable remedy.
+1. Decide what remedy the policy actually requires for this case. Check escalation/review rules first — they can override an otherwise-applicable remedy — but apply them only when their condition is actually met by the transaction data.
 2. State what remedy the reply actually offers.
 3. Score the match 1-5:
    5 = reply offers exactly the remedy the policy requires (including required escalations)
@@ -47,7 +47,12 @@ You are given policy excerpts, a customer's transaction record, the incoming ema
    1 = contradicts policy (grants something forbidden, denies something owed, or skips a mandatory escalation)
 
 Respond with ONLY a JSON object:
-{"policy_requires": "...", "rule": "...", "reply_offers": "...", "match_score": <1-5>, "justification": "..."}"""
+{"policy_requires": "...", "rule": "...", "reply_offers": "...", "match_score": <1-5>, "justification": "..."}
+
+Field rules:
+- "rule": the SINGLE rule identifier that determines the remedy, exactly as written in the policy (e.g. "R2.3"). Nothing else — no sentence, no list, no explanation in this field.
+- "policy_requires": one sentence stating the required remedy for THIS case.
+- "match_score": an integer 1-5."""
 
 COMPLIANCE_JUDGE_USER = """## Policy excerpts
 {policy_chunks}

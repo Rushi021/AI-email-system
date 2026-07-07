@@ -1,108 +1,45 @@
 {
   "check_1_discriminative": {
-    "generated_avg_final_score": 55.3,
-    "control_avg_final_score": 61.0,
-    "gap": -5.7,
-    "passes": false,
+    "generated_avg_final_score": 97.0,
+    "control_avg_final_score": 20.2,
+    "gap": 76.8,
+    "passes": true,
     "interpretation": "The metric must clearly separate deliberately bad replies from real generated ones; a large positive gap means it does."
   },
   "check_2_correlation": {
-    "pearson_r_alignment_vs_lexical_overlap": 0.297,
+    "pearson_r_alignment_vs_lexical_overlap": null,
     "divergent_examples": [
       {
-        "ticket_id": "H02",
-        "reply_source": "control",
-        "alignment": 4,
-        "lexical_overlap": 0.0661,
+        "ticket_id": "H01",
+        "reply_source": "generated",
+        "alignment": 5,
+        "lexical_overlap": 0.1193,
         "note": "high semantic alignment despite low word overlap \u2014 good paraphrase correctly rewarded"
       }
     ],
     "interpretation": "Moderate positive correlation is expected (similar meaning often shares words). Divergent cases prove the alignment judge measures meaning, not string overlap."
   },
   "check_3_judge_trust": {
-    "agreement": "0/9",
-    "agreement_rate": 0.0,
+    "agreement": "2/2",
+    "agreement_rate": 1.0,
     "comparisons": [
       {
         "ticket_id": "H01",
         "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
+        "judge_said_policy_requires": "A return requested within 30 days of the delivery date, where the item is unworn and in original condition, must be granted a full refund to the original payment method.",
+        "judge_cited_rule": "R1.1",
         "hand_labeled_remedy": "full_refund",
         "hand_labeled_rule": "R1.1",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H02",
-        "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "denied_final_sale",
-        "hand_labeled_rule": "R1.3",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H03",
-        "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "free_replacement_no_return_needed",
-        "hand_labeled_rule": "R2.3",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H04",
-        "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "flag_for_manual_review",
-        "hand_labeled_rule": "R7",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H05",
-        "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "escalate_to_human_agent",
-        "hand_labeled_rule": "R6",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H06",
-        "reply_source": "generated",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "open_billing_investigation",
-        "hand_labeled_rule": "R5.1",
-        "agreement": false
+        "agreement": true
       },
       {
         "ticket_id": "H01",
         "reply_source": "control",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
+        "judge_said_policy_requires": "A full refund to the original payment method must be granted for the unworn, in original condition return requested within 30 days of delivery.",
+        "judge_cited_rule": "R1.1",
         "hand_labeled_remedy": "full_refund",
         "hand_labeled_rule": "R1.1",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H02",
-        "reply_source": "control",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "denied_final_sale",
-        "hand_labeled_rule": "R1.3",
-        "agreement": false
-      },
-      {
-        "ticket_id": "H04",
-        "reply_source": "control",
-        "judge_said_policy_requires": "mock remedy derived offline",
-        "judge_cited_rule": "R0",
-        "hand_labeled_remedy": "flag_for_manual_review",
-        "hand_labeled_rule": "R7",
-        "agreement": false
+        "agreement": true
       }
     ],
     "interpretation": "Before trusting the compliance judge's scores, we verify its own reading of the policy (which rule applies) against hand-labeled ground truth it never saw. High agreement means its compliance scores are grounded in a correct reading of the document."

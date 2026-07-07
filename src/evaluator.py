@@ -77,9 +77,15 @@ def evaluate_reply(
     reply_source: str,
 ) -> EvaluationResult:
     today = os.getenv("EVAL_TODAY", date.today().isoformat())
-    query = f"{ticket.incoming_email}\n{transaction.status} {transaction.product}"
-    policy_chunks = policy_store.retrieve(query, k=4)
-    chunks_text = "\n\n".join(policy_chunks)
+    # The compliance judge must not miss the decisive rule because retrieval
+    # ranked it low, so give it the full document when it's small (most
+    # support policies fit comfortably); fall back to top-k for large ones.
+    full_policy = policy_store.all_text()
+    if len(full_policy) <= 12000:
+        chunks_text = full_policy
+    else:
+        query = f"{ticket.incoming_email}\n{transaction.status} {transaction.product}"
+        chunks_text = "\n\n".join(policy_store.retrieve(query, k=6))
     txn_json = json.dumps(transaction.model_dump(), indent=2)
 
     # --- A. policy compliance judge -------------------------------------

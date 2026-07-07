@@ -1,7 +1,7 @@
 [
   {
     "ticket_id": "H01",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
+    "reply": "Hi Victor,\n\nI\u2019m truly sorry about the mix-up with your Down Vest (ORD-1021). I\u2019ve reviewed your order, and I see the issue\u2014you received the olive color instead of the navy you ordered. Since the vest is still in its original condition with tags attached, it qualifies for a full refund under our standard return policy.\n\nI\u2019ll process the refund of $88.00 to your original payment method right away, and you should see it in 3-5 business days depending on your bank. No return shipping is needed. I\u2019ve also flagged this to our team to prevent similar issues in the future. Thanks for your patience, and I apologize again for the inconvenience.",
     "retrieved_policy_chunks": [
       "R4.2 Warranty - misuse\nDamage resulting from misuse, accident, or normal wear and tear is NOT covered by warranty. Such claims MUST be\ndeclined, though the agent MAY offer a one-time 15% discount code on a replacement purchase as goodwill.",
       "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
@@ -12,81 +12,6 @@
       "T16",
       "T08",
       "T03"
-    ]
-  },
-  {
-    "ticket_id": "H02",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
-    "retrieved_policy_chunks": [
-      "R1.3 Returns - final sale\nItems marked final sale are NOT eligible for return, refund, or store credit under any circumstances. Agents MUST\ndecline final-sale return requests; no exceptions may be granted.",
-      "R1.1 Returns - standard window\nA return requested within 30 days of the delivery date, where the item is unworn and in original condition, MUST be\ngranted a full refund to the original payment method. A return of a worn or damaged-by-customer item does NOT qualify\nfor a refund under this rule.",
-      "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
-      "NorthPeak Outdoor Gear - Customer Service Policy (v3.1, effective 2026-01-01)"
-    ],
-    "retrieved_similar_tickets": [
-      "T01",
-      "T04",
-      "T02"
-    ]
-  },
-  {
-    "ticket_id": "H03",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
-    "retrieved_policy_chunks": [
-      "R1.1 Returns - standard window\nA return requested within 30 days of the delivery date, where the item is unworn and in original condition, MUST be\ngranted a full refund to the original payment method. A return of a worn or damaged-by-customer item does NOT qualify\nfor a refund under this rule.",
-      "R3.2 Cancellation - after shipment\nAn order cannot be cancelled once shipped. The request MUST be handled as a return under rules R1.1-R1.4 after\ndelivery. Agents MUST NOT intercept or recall shipped packages.",
-      "R3.1 Cancellation - before shipment\nAn order cancelled before it has shipped MUST receive a full refund with no cancellation fee. Agents MUST NOT charge\nrestocking or processing fees for pre-shipment cancellations.",
-      "R1.4 Returns - expired\nA return requested more than 90 days after the delivery date MUST be declined. Neither refund nor store credit may be\noffered."
-    ],
-    "retrieved_similar_tickets": [
-      "T18",
-      "T01",
-      "T04"
-    ]
-  },
-  {
-    "ticket_id": "H04",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
-    "retrieved_policy_chunks": [
-      "R3.2 Cancellation - after shipment\nAn order cannot be cancelled once shipped. The request MUST be handled as a return under rules R1.1-R1.4 after\ndelivery. Agents MUST NOT intercept or recall shipped packages.",
-      "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
-      "R1.1 Returns - standard window\nA return requested within 30 days of the delivery date, where the item is unworn and in original condition, MUST be\ngranted a full refund to the original payment method. A return of a worn or damaged-by-customer item does NOT qualify\nfor a refund under this rule.",
-      "R1.3 Returns - final sale\nItems marked final sale are NOT eligible for return, refund, or store credit under any circumstances. Agents MUST\ndecline final-sale return requests; no exceptions may be granted."
-    ],
-    "retrieved_similar_tickets": [
-      "T02",
-      "T15",
-      "T18"
-    ]
-  },
-  {
-    "ticket_id": "H05",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
-    "retrieved_policy_chunks": [
-      "R3.2 Cancellation - after shipment\nAn order cannot be cancelled once shipped. The request MUST be handled as a return under rules R1.1-R1.4 after\ndelivery. Agents MUST NOT intercept or recall shipped packages.",
-      "R3.1 Cancellation - before shipment\nAn order cancelled before it has shipped MUST receive a full refund with no cancellation fee. Agents MUST NOT charge\nrestocking or processing fees for pre-shipment cancellations.",
-      "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
-      "R1.1 Returns - standard window\nA return requested within 30 days of the delivery date, where the item is unworn and in original condition, MUST be\ngranted a full refund to the original payment method. A return of a worn or damaged-by-customer item does NOT qualify\nfor a refund under this rule."
-    ],
-    "retrieved_similar_tickets": [
-      "T08",
-      "T09",
-      "T14"
-    ]
-  },
-  {
-    "ticket_id": "H06",
-    "reply": "Hi, thanks for reaching out about your order. Based on our policy I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) \u2014 NorthPeak Support",
-    "retrieved_policy_chunks": [
-      "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
-      "R5.1 Billing - duplicate charge\nA confirmed duplicate charge MUST be refunded immediately in full. If the duplicate is not yet confirmed in the billing\nsystem, the agent MUST open a billing investigation and reply within 2 business days; the agent MUST NOT deny the\nclaim outright.",
-      "R3.2 Cancellation - after shipment\nAn order cannot be cancelled once shipped. The request MUST be handled as a return under rules R1.1-R1.4 after\ndelivery. Agents MUST NOT intercept or recall shipped packages.",
-      "R3.1 Cancellation - before shipment\nAn order cancelled before it has shipped MUST receive a full refund with no cancellation fee. Agents MUST NOT charge\nrestocking or processing fees for pre-shipment cancellations."
-    ],
-    "retrieved_similar_tickets": [
-      "T12",
-      "T08",
-      "T01"
     ]
   }
 ]
