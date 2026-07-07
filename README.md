@@ -230,7 +230,106 @@ views/                        Assistant (paste email → reply + lazy accuracy c
 results/                      generated_replies / evaluation_results / validation_report
 ```
 
-## 8. AI tools disclosure
+## 8. Future implementation — from assistant to autonomous support layer
+
+Everything below builds on what already exists: the company-agnostic RAG core, the
+**validated accuracy metric**, and the swap-the-data-files design. The metric is the key —
+it stops being a report card and becomes the **control system** that decides how much
+autonomy the product is allowed.
+
+### Target architecture
+
+```
+Gmail / IMAP / helpdesk API (Hiver, Zendesk, ...)
+      │  inbox sync (Gmail API watch + Pub/Sub push, no polling)
+      ▼
+Ingestion & PII redaction ──► thread reconstruction · attachment/OCR parsing
+      ▼
+Triage classifier (small/cheap model)
+      │  category · sentiment · urgency · language · is-support vs noise
+      ▼
+Router ──────────────┬──────────────────────┬─────────────────────┐
+      ▼              ▼                      ▼                     ▼
+ AUTO-REPLY     DRAFT FOR REVIEW      ESCALATE TO HUMAN      IGNORE/ARCHIVE
+ (score ≥ T₁)   (T₂ ≤ score < T₁)     (score < T₂, or        (newsletters,
+      │              │                 policy says so:        auto-replies)
+      │              │                 high-value, legal,
+      │              │                 repeat contact)
+      ▼              ▼                      ▼
+ RAG generator ──► evaluator gate (same 3-layer metric, online) ──► send / queue
+      ▲                                                              │
+      └────────── learning loop: agent edits, outcomes, CSAT ◄───────┘
+```
+
+The generator and evaluator in the middle are **exactly the modules in this repo** —
+`src/generator.py` and `src/evaluator.py` — promoted from batch tools to online services.
+
+### Roadmap
+
+1. **Gmail inbox integration.** OAuth per mailbox, Gmail API `watch` + Pub/Sub for
+   real-time push (no polling), full thread reconstruction so the model sees the
+   conversation, not one message. The same adapter interface covers IMAP and helpdesk
+   APIs (Hiver, Zendesk, Front) so the core never knows which inbox it serves.
+
+2. **Triage & categorization.** A small, cheap model (or a distilled classifier) labels
+   every incoming email: support vs noise, category (return / shipping / warranty /
+   billing / info request), sentiment, urgency, language. This is the routing signal —
+   and it keeps the expensive generation model off emails that never needed it.
+
+3. **Confidence-gated auto-reply for straightforward cases.** Every draft is scored by
+   the same 3-layer evaluator **before** anything is sent. Score ≥ T₁ *and* zero
+   deterministic flags *and* the cited rule is unambiguous → send automatically.
+   The thresholds are not guesses: they are calibrated on the validation set exactly the
+   way §6 calibrates the metric, and tightened per category until the measured
+   false-approve rate is below an agreed SLA. Autonomy is earned by the metric, per
+   category, not switched on globally.
+
+4. **Human-in-the-loop for everything else.** Mid-confidence drafts land in the agent's
+   inbox as editable suggestions with the grounding attached (policy clauses, transaction,
+   precedent tickets — the same transparency panel the Assistant page already shows).
+   Low-confidence or policy-mandated cases (high-value orders, legal threats, frequent
+   returners — rules the policy already encodes) skip drafting and escalate with a
+   one-paragraph brief of what the policy requires. Every accept / edit / reject is
+   captured as labeled data.
+
+5. **Beyond complaints: an operational-knowledge policy.** Info requests ("what's your
+   sizing?", "do you ship to X?", "where is my invoice?") don't need a remedies policy —
+   they need an *operational information document*: shipping matrices, store hours, product
+   FAQs, account procedures. Because the whole pipeline is document-agnostic, this is
+   literally a second PDF in `data/` and a routing rule: the compliance judge's question
+   changes from "did the reply offer the required remedy?" to "is every stated fact
+   present in the operational document?" — same structure, same validation method.
+
+6. **Retrieval upgrade.** TF-IDF → hybrid retrieval (BM25 + embeddings in pgvector),
+   cross-encoder re-ranking, and a **versioned multi-document policy store** with
+   effective dates — so "which policy was in force when this order shipped?" has a
+   correct answer, and a policy update triggers automatic re-evaluation of the golden set
+   (catching rules the new document silently changed).
+
+7. **Continuous learning & drift detection.** Agent edits become preference pairs for
+   the generator; accept/reject decisions continuously re-validate the judge
+   (human-vs-judge agreement is monitored the same way §6's check 3 does it once).
+   If agreement drifts below threshold, autonomy automatically steps down a tier —
+   the system degrades to draft-mode instead of failing silently.
+
+8. **From suggested text to suggested action.** The judge already extracts the required
+   remedy in structured form ("full refund of $88.00 under R1.1"). Connect that to
+   order-management / payment APIs (Shopify, Stripe) so approving a reply also executes
+   the refund — with the same tiered autonomy: auto-execute small refunds, require a
+   click for large ones, dual-approval above a limit. This closes the loop on the actual
+   business problem: not writing emails, but resolving tickets.
+
+9. **Enterprise hardening.** Multi-tenant data isolation (per-company namespace — the
+   company-agnostic design was built for this), PII redaction before any LLM call,
+   BYO-model/VPC deployment via the pluggable `llm_client`, immutable audit log of every
+   suggestion + its grounding + who approved it, RBAC, per-language support, and
+   cost tiering (small model for triage, large for generation, cached embeddings).
+
+**Why this is credible rather than aspirational:** every stage of the diagram is gated by
+the metric this submission validates. The hard part of autonomous support isn't generating
+text — it's *knowing when the text is safe to send*. That is exactly what was built here.
+
+## 9. AI tools disclosure
 
 This submission was built with Claude Code (Claude Fable 5) doing the implementation under
 the direction of a human-authored design brief: architecture, dataset design, metric design
