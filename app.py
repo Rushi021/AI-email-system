@@ -61,15 +61,22 @@ with tab_results:
             for g in json.loads((RESULTS / "generated_replies.json").read_text())
         }
 
-        overall = sum(r["final_score"] for r in generated) / len(generated)
+        overall = (
+            sum(r["final_score"] for r in generated) / len(generated)
+            if generated
+            else 0.0
+        )
         c1, c2, c3 = st.columns(3)
         c1.metric("Overall score (generated)", f"{overall:.1f} / 100")
         c2.metric("Holdout tickets", len(generated))
         c3.metric("Control (bad) replies", len(results) - len(generated))
 
-        df = pd.DataFrame(generated)
         st.subheader("Score by category")
-        st.bar_chart(df.groupby("category")["final_score"].mean())
+        if generated:
+            df = pd.DataFrame(generated)
+            st.bar_chart(df.groupby("category")["final_score"].mean())
+        else:
+            st.info("No generated replies found in `evaluation_results.json`.")
 
         st.subheader("Per-ticket detail")
         for r in results:

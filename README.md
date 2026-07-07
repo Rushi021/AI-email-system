@@ -28,8 +28,10 @@ python pipeline.py --all      # generate → evaluate → validate; writes resul
 streamlit run app.py          # dashboard + metric validation + live demo
 ```
 
-`LLM_PROVIDER=anthropic|openai` selects the provider (one interface in `src/llm_client.py`
-is used for generation and every judge call). `LLM_MODEL` optionally overrides the model.
+`LLM_PROVIDER=anthropic|openai|mistral` selects the provider (one interface in
+`src/llm_client.py` is used for generation and every judge call; Mistral runs through its
+OpenAI-compatible endpoint with free-tier rate-limit throttling built in). `LLM_MODEL`
+optionally overrides the model.
 Dataset dates are anchored around 2026-07-07; set `EVAL_TODAY=2026-07-07` if you run the
 evaluation much later, so date-window rules (30/90-day returns, 1-year warranty) still
 resolve the way the labels assume.

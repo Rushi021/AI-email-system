@@ -3,6 +3,8 @@
 Provider is selected with the LLM_PROVIDER env var:
   - "anthropic" (default) -> Claude via the official anthropic SDK
   - "openai"              -> OpenAI via the official openai SDK
+  - "mistral"             -> Mistral via its OpenAI-compatible endpoint
+                             (free tier friendly: throttled to ~1 req/s)
   - "mock"                -> deterministic offline stub, used only to smoke-test
                              the pipeline plumbing without an API key. Not part
                              of the graded flow; results are meaningless.
@@ -16,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import time
 
 from dotenv import load_dotenv
 
@@ -24,7 +27,10 @@ load_dotenv()
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-4-8",
     "openai": "gpt-4o",
+    "mistral": "mistral-small-latest",
 }
+
+_last_mistral_call = 0.0
 
 
 def complete(system: str, user: str, max_tokens: int = 1200) -> str:
@@ -44,10 +50,25 @@ def complete(system: str, user: str, max_tokens: int = 1200) -> str:
         )
         return "".join(b.text for b in response.content if b.type == "text")
 
-    if provider == "openai":
+    if provider in ("openai", "mistral"):
         from openai import OpenAI
 
-        client = OpenAI()
+        if provider == "mistral":
+            # Mistral's API is OpenAI-compatible; free tier is rate-limited to
+            # ~1 request/second, so throttle and retry generously.
+            global _last_mistral_call
+            wait = 1.1 - (time.monotonic() - _last_mistral_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_mistral_call = time.monotonic()
+            client = OpenAI(
+                base_url="https://api.mistral.ai/v1",
+                api_key=os.environ["MISTRAL_API_KEY"],
+                max_retries=8,
+            )
+        else:
+            client = OpenAI()
+
         response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
@@ -61,7 +82,7 @@ def complete(system: str, user: str, max_tokens: int = 1200) -> str:
     if provider == "mock":
         return _mock_complete(system, user)
 
-    raise ValueError(f"Unknown LLM_PROVIDER: {provider!r} (use anthropic|openai)")
+    raise ValueError(f"Unknown LLM_PROVIDER: {provider!r} (use anthropic|openai|mistral)")
 
 
 def extract_json(text: str) -> dict:
