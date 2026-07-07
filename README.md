@@ -5,6 +5,30 @@ company's **own data** — its policy document, its transaction records, and the
 agents actually sent — and, most importantly, **measures how accurate those suggestions are**
 with a validated, three-layer accuracy system.
 
+## ▶ How to run & access the app
+
+```bash
+# one-time setup (skip if .venv already exists)
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # then add your API key(s) — or do it later in the app's Settings page
+
+# start the app
+streamlit run app.py
+```
+
+Streamlit prints a local URL — open **http://localhost:8501** in your browser.
+You land on the **✉️ Assistant** page; the left sidebar switches between the three pages:
+
+| Page | What you do there |
+|---|---|
+| **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. The order ID is auto-detected from the email; the reply appears in a copy-ready block. Expand **"How accurate is this reply?"** to score it against the policy (runs 2 extra LLM calls, only on demand). |
+| **⚙️ Settings** | Upload a new policy PDF (takes effect immediately), pick the LLM provider, paste an API key, and hit **Test connection**. |
+| **📊 Evaluation (internal)** | Batch results + metric-validation dashboards for the challenge submission (populate with `python pipeline.py --all`). |
+
+No API key yet? The app still opens — configure a provider on the Settings page first,
+then use the Assistant.
+
 ```
 incoming email ──► TF-IDF retrieve policy clauses (data/policy.pdf)
       │       ──► TF-IDF retrieve similar past tickets (data/dataset.json corpus split)
@@ -18,14 +42,13 @@ incoming email ──► TF-IDF retrieve policy clauses (data/policy.pdf)
    metric validation ──► control gap · semantic-vs-lexical correlation · judge trust check
 ```
 
-## 1. Quick start
+## 1. Quick start (batch pipeline)
+
+Setup is the same as "How to run & access the app" above; then:
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env          # then put your ANTHROPIC_API_KEY (or OPENAI_API_KEY) in it
 python pipeline.py --all      # generate → evaluate → validate; writes results/*.json
-streamlit run app.py          # Assistant UI · Settings · Evaluation (internal) dashboards
+python pipeline.py --all --limit 1   # frugal trial: exactly 5 LLM calls
 ```
 
 `LLM_PROVIDER=anthropic|openai|mistral` selects the provider (one interface in
