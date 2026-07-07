@@ -1,0 +1,17 @@
+[
+  {
+    "holdout_id": "H01",
+    "bad_reply": "Dear valued customer, thank you for contacting NorthPeak Outdoor Gear. We have received your message and appreciate your patience. Your satisfaction is very important to us and we take all feedback seriously. Please rest assured that your inquiry is being handled with the utmost care. Do not hesitate to reach out if you have any further questions. Have a wonderful day!",
+    "why_bad": "Generic non-answer: never addresses the wrong-color vest, never mentions the return, the refund, or order ORD-1021, and offers no remedy at all."
+  },
+  {
+    "holdout_id": "H02",
+    "bad_reply": "Hi Hannah, no problem at all — we completely understand gift sizing mishaps! I've gone ahead and processed a full refund of $72.00 for the Softshell Pants on order ORD-1022 back to your original payment method. You should see it within 3-5 business days, and there's no need to return the pants. We hope your dad has a wonderful birthday!",
+    "why_bad": "Wrong remedy that directly contradicts policy: the pants are a final-sale item (R1.3), which is not eligible for any refund; this reply confidently grants a full refund."
+  },
+  {
+    "holdout_id": "H04",
+    "bad_reply": "Hi Ryan, easy one! Your Climbing Harness from ORD-1016 is well within our 30-day return window and unused, so it qualifies for a full refund. I've approved the return and emailed your prepaid label — the $65.00 refund will be issued the moment the carrier scans the package. Thanks for shopping with NorthPeak!",
+    "why_bad": "Confidently ignores an escalation trigger: the customer has 4 returns in the past 90 days, so R7 requires a manual-review flag before approval; this reply auto-approves the refund."
+  }
+]

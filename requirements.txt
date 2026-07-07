@@ -1,0 +1,11 @@
+anthropic
+openai
+streamlit
+python-dotenv
+pydantic
+rich
+pandas
+scikit-learn
+numpy
+pypdf
+fpdf2

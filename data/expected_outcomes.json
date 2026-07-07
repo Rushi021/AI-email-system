@@ -1,0 +1,8 @@
+[
+  {"ticket_id": "H01", "correct_remedy": "full_refund", "citing_rule": "R1.1", "notes": "Delivered 2026-06-27, unworn with tags, request within 30 days, price $88 < $200, customer has 0 recent returns."},
+  {"ticket_id": "H02", "correct_remedy": "denied_final_sale", "citing_rule": "R1.3", "notes": "Item is final sale; no return, exchange, refund, or credit under any circumstances."},
+  {"ticket_id": "H03", "correct_remedy": "free_replacement_no_return_needed", "citing_rule": "R2.3", "notes": "Damaged in transit; default remedy is replacement, refund only if customer explicitly declines a replacement."},
+  {"ticket_id": "H04", "correct_remedy": "flag_for_manual_review", "citing_rule": "R7", "notes": "Customer has 4 returns in past 90 days; return may not be auto-approved even though it would qualify under R1.1."},
+  {"ticket_id": "H05", "correct_remedy": "escalate_to_human_agent", "citing_rule": "R6", "notes": "Cancellation before shipment would be R3.1, but disputed value $220 > $200 so it must be escalated, not resolved autonomously."},
+  {"ticket_id": "H06", "correct_remedy": "open_billing_investigation", "citing_rule": "R5.1", "notes": "Duplicate charge not yet confirmed in billing system; must open investigation and reply within 2 business days, not refund immediately and not deny."}
+]
