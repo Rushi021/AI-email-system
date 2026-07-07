@@ -25,7 +25,7 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # then put your ANTHROPIC_API_KEY (or OPENAI_API_KEY) in it
 python pipeline.py --all      # generate → evaluate → validate; writes results/*.json
-streamlit run app.py          # dashboard + metric validation + live demo
+streamlit run app.py          # Assistant UI · Settings · Evaluation (internal) dashboards
 ```
 
 `LLM_PROVIDER=anthropic|openai|mistral` selects the provider (one interface in
@@ -200,7 +200,10 @@ src/generator.py              policy + precedent → suggested reply
 src/evaluator.py              3-layer accuracy system (the core of the submission)
 src/validate_metric.py        the three validation checks
 pipeline.py                   batch CLI: --all | --generate | --evaluate | --validate
-app.py                        Streamlit: batch results · metric validation · live demo
+app.py                        Streamlit entrypoint (st.navigation over views/)
+views/                        Assistant (paste email → reply + lazy accuracy check) ·
+                              Settings (policy PDF upload, provider/API keys) ·
+                              Evaluation (internal): batch results · metric validation
 results/                      generated_replies / evaluation_results / validation_report
 ```
 

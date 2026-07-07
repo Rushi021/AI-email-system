@@ -11,8 +11,8 @@ We simulate one fictional company (NorthPeak Outdoor Gear) but the code is compa
 
 ## The one inviolable design rule
 
-**Everything company-specific lives in `data/`. Nothing in `src/`, `pipeline.py`, or
-`app.py` may reference NorthPeak, a product, or a specific policy rule.** Swapping the
+**Everything company-specific lives in `data/`. Nothing in `src/`, `pipeline.py`,
+`app.py`, or `views/` may reference NorthPeak, a product, or a specific policy rule.** Swapping the
 three data files (`policy.pdf`, `transactions.json`, `dataset.json`) for another company's
 must work with zero code changes. Never hardcode a rule ID, product name, or remedy in code
 or prompts — all company facts are injected at runtime from `data/`.
@@ -26,7 +26,8 @@ incoming email ─► PolicyStore (TF-IDF over any PDF)      src/policy_store.py
              ─► generator (LLM, RAG prompt)              src/generator.py + src/prompts.py
              ─► evaluator (3 layers + penalties)         src/evaluator.py
              ─► metric validation (3 checks)             src/validate_metric.py
-pipeline.py = batch CLI · app.py = Streamlit UI · results/*.json = outputs
+pipeline.py = batch CLI · app.py + views/ = Streamlit UI (st.navigation:
+Assistant · Settings · Evaluation) · results/*.json = outputs
 ```
 
 - **Scoring formula** (do not change weights casually — they're justified in README §5):
