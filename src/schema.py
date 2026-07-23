@@ -42,11 +42,42 @@ class Ticket(BaseModel):
     actual_reply: str
 
 
+class IncomingEmail(BaseModel):
+    """A live inbound email fetched from a connected inbox (or the demo inbox).
+    Generic mail fields only — no company or provider specifics."""
+
+    id: str  # provider message id (unique; used to dedupe the queue)
+    thread_id: str = ""
+    from_addr: str = ""
+    subject: str = ""
+    body: str = ""
+    received_at: str = ""
+
+
 class GeneratedReply(BaseModel):
     ticket_id: str
     reply: str
     retrieved_policy_chunks: list[str] = Field(default_factory=list)
     retrieved_similar_tickets: list[str] = Field(default_factory=list)  # ticket_ids
+
+
+def detect_order_id(email: str, order_ids) -> Optional[str]:
+    """First known order id that appears verbatim (case-insensitive) in the email."""
+    lower = email.lower()
+    hits = [(lower.find(oid.lower()), oid) for oid in order_ids if oid.lower() in lower]
+    return min(hits)[1] if hits else None
+
+
+def placeholder_transaction() -> "Transaction":
+    """Neutral stand-in when an email matches no known order."""
+    return Transaction(
+        order_id="",
+        customer_id="",
+        product="(no transaction record on file)",
+        price=0.0,
+        order_date="",
+        status="unknown",
+    )
 
 
 class EvaluationResult(BaseModel):
@@ -62,6 +93,10 @@ class EvaluationResult(BaseModel):
     judge_reply_offers: str = ""
     compliance_match_score: int = 0  # 1-5
     compliance_justification: str = ""
+    # judge-derived escalation signal (read from the policy, not hardcoded).
+    # Defaults keep the batch pipeline and validate_metric.py unchanged.
+    escalate: bool = False
+    escalate_reason: str = ""
 
     # B. alignment with actual reply
     alignment: int = 0  # 1-5

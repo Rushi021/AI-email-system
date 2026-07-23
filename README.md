@@ -23,7 +23,9 @@ You land on the **✉️ Assistant** page; the left sidebar switches between the
 | Page | What you do there |
 |---|---|
 | **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. The order ID is auto-detected from the email; the reply appears in a copy-ready block. Expand **"How accurate is this reply?"** to score it against the policy (runs 2 extra LLM calls, only on demand). |
-| **⚙️ Settings** | Upload a new policy PDF (takes effect immediately), pick the LLM provider, paste an API key, and hit **Test connection**. |
+| **📥 Inbox** | **Sync inbox** to fetch unread mail from the connected source (an MCP email server, or the built-in demo inbox) and route every message through the pipeline; or paste a single email to route it. Each email is classified **auto-reply / needs-review / escalate / ignore** and dropped into the queue. |
+| **🗂️ Review** | The human-action dashboard: a priority-sorted queue split into Escalations · Needs review · Auto · Done. Edit the suggested reply, **Send** (or **Simulate send** in dry-run), or dismiss. The sidebar shows a live pending-count badge. |
+| **⚙️ Settings** | Upload a new policy PDF (takes effect immediately); pick the LLM provider + key; **connect an email source** (demo or an MCP server URL + token); set **automation thresholds** (T1/T2) and the **live-send** switch; configure the **email digest**. |
 | **📊 Evaluation (internal)** | Batch results + metric-validation dashboards for the challenge submission (populate with `python pipeline.py --all`). |
 
 No API key yet? The app still opens — configure a provider on the Settings page first,
@@ -212,22 +214,60 @@ Run `python pipeline.py --all` with a real API key and the three headline number
 gap, correlation coefficient, judge agreement rate) print in the summary and populate the
 app's Metric Validation tab.
 
+## 6b. The automation layer — inbox → route → review
+
+The suggested-reply engine and the validated metric are the hard part; the automation layer wraps
+them into an end-to-end support system. **The metric is the control system**: it decides how much
+autonomy each reply earns.
+
+```
+inbox (MCP email server | built-in demo)  ── src/email_source.py ──► IncomingEmail[]
+        │
+        ▼
+   src/router.py   reuses generate_reply + evaluate_reply, unchanged
+        │   AUTO      confident + policy-clean + a rule was cited, and policy does not mandate a human
+        │   REVIEW    decent draft, not confident enough → queued for a human to approve/edit
+        │   ESCALATE  the compliance judge says the policy requires a human, or confidence < T2
+        │   IGNORE    no order id and not a support message (newsletter/noise — no LLM spent)
+        ▼
+   src/queue_store.py (SQLite)  ── priority-sorted queue ──►  🗂️ Review dashboard
+        └── src/notify.py  ── email digest of pending items via the same connector
+```
+
+- **Live confidence.** A live email has no human reply to align against, so alignment is dropped and
+  confidence is renormalized over compliance + quality minus deterministic penalties. Auto-reply
+  additionally requires zero flags, a cited rule, and no policy-mandated escalation.
+- **Escalation stays company-agnostic.** The compliance judge emits a boolean `escalate` +
+  `escalate_reason` **read from the policy document** — the router never hardcodes a rule id. Swap
+  the policy PDF and escalation behavior changes with it.
+- **Email connector.** One pluggable interface (mirroring `llm_client`). `demo` runs fully offline
+  from `data/demo_inbox.json`; `mcp` makes the app an **MCP client** to a Gmail (or any) MCP server —
+  server URL + token in Settings, tools auto-mapped by capability. Configured per deployment in the
+  Settings dashboard, exactly like the LLM provider.
+- **Dry-run by default.** Nothing is actually sent until the **live-send** switch is on; until then
+  auto-replies are queued as pre-approved drafts and "Send" simulates. Every threshold, connector,
+  and notification setting is changed from Settings — no code edits to adapt the system to a new company.
+
 ## 7. Repo map
 
 ```
 scripts/build_policy_pdf.py   renders the policy text into data/policy.pdf (one-time)
 data/                         ALL company-specific inputs (swap these for a new company)
+data/demo_inbox.json          offline demo inbox (live inbound emails, no human replies)
 src/policy_store.py           generic PDF → chunks → TF-IDF retrieval
 src/retriever.py              TF-IDF retrieval over past-ticket corpus (corpus split only)
 src/generator.py              policy + precedent → suggested reply
 src/evaluator.py              3-layer accuracy system (the core of the submission)
 src/validate_metric.py        the three validation checks
+src/router.py                 routing engine: email → AUTO / REVIEW / ESCALATE / IGNORE
+src/email_source.py           pluggable inbox connector (demo | mcp), one interface
+src/queue_store.py            SQLite review/action queue (results/queue.db)
+src/notify.py                 email digest of pending review + escalation items
+src/config.py                 non-secret runtime config (config.json): thresholds, source, digest
 pipeline.py                   batch CLI: --all | --generate | --evaluate | --validate
 app.py                        Streamlit entrypoint (st.navigation over views/)
-views/                        Assistant (paste email → reply + lazy accuracy check) ·
-                              Settings (policy PDF upload, provider/API keys) ·
-                              Evaluation (internal): batch results · metric validation
-results/                      generated_replies / evaluation_results / validation_report
+views/                        Assistant · Inbox · Review · Settings · Evaluation (internal)
+results/                      generated_replies / evaluation_results / validation_report / queue.db
 ```
 
 ## 8. Future implementation — from assistant to autonomous support layer
@@ -265,6 +305,20 @@ The generator and evaluator in the middle are **exactly the modules in this repo
 `src/generator.py` and `src/evaluator.py` — promoted from batch tools to online services.
 
 ### Roadmap
+
+**Status:** items 1–4 below are now **implemented** in this repo (see §6b) — an MCP email connector
+(plus an offline demo inbox), a cheap keyword triage/noise gate, confidence-gated routing with a
+dry-run auto-send switch, and a human-in-the-loop review dashboard with an email digest. Items 5–9
+remain the forward path. Details of what shipped:
+
+- **Inbox integration** via the **MCP** connector (`src/email_source.py`) — the "same adapter
+  interface covers any provider" idea, realized as one pluggable connector selected in Settings.
+  (Gmail-API OAuth / IMAP / Pub/Sub push are the same-interface extensions still to add.)
+- **Triage** is a cheap keyword classifier + noise gate in `src/router.py` (`_classify` / `_is_noise`)
+  that routes non-support mail to IGNORE without spending an LLM call — a distilled model is the upgrade.
+- **Confidence-gated auto-reply** is the T1/T2 thresholding in `src/router.py`, gated further by
+  zero flags + a cited rule + no policy-mandated escalation, with a global dry-run/live-send switch.
+- **Human-in-the-loop** is the 🗂️ Review dashboard + SQLite queue + email digest.
 
 1. **Gmail inbox integration.** OAuth per mailbox, Gmail API `watch` + Pub/Sub for
    real-time push (no polling), full thread reconstruction so the model sees the

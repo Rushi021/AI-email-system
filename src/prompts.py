@@ -47,12 +47,14 @@ You are given policy excerpts, a customer's transaction record, the incoming ema
    1 = contradicts policy (grants something forbidden, denies something owed, or skips a mandatory escalation)
 
 Respond with ONLY a JSON object:
-{"policy_requires": "...", "rule": "...", "reply_offers": "...", "match_score": <1-5>, "justification": "..."}
+{"policy_requires": "...", "rule": "...", "reply_offers": "...", "match_score": <1-5>, "escalate": <true|false>, "escalate_reason": "...", "justification": "..."}
 
 Field rules:
 - "rule": the SINGLE rule identifier that determines the remedy, exactly as written in the policy (e.g. "R2.3"). Nothing else — no sentence, no list, no explanation in this field.
 - "policy_requires": one sentence stating the required remedy for THIS case.
-- "match_score": an integer 1-5."""
+- "match_score": an integer 1-5.
+- "escalate": true if the policy requires THIS case be handed to a human / manual review / senior agent (i.e. it must NOT be resolved autonomously), false otherwise. Decide this only from the policy text and the transaction data.
+- "escalate_reason": if escalate is true, one sentence naming why (and the rule); otherwise an empty string."""
 
 COMPLIANCE_JUDGE_USER = """## Policy excerpts
 {policy_chunks}

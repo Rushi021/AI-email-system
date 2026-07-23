@@ -148,6 +148,8 @@ def evaluate_reply(
         judge_reply_offers=str(comp.get("reply_offers", "")),
         compliance_match_score=compliance,
         compliance_justification=str(comp.get("justification", "")),
+        escalate=bool(comp.get("escalate", False)),
+        escalate_reason=str(comp.get("escalate_reason", "")),
         alignment=alignment,
         alignment_justification=str(aq.get("alignment_justification", "")),
         groundedness=quality_subscores["groundedness"],

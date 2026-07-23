@@ -1,0 +1,42 @@
+[
+  {
+    "id": "demo-001",
+    "thread_id": "t-001",
+    "from_addr": "dana.rivers@example.com",
+    "subject": "Return request for order ORD-1021",
+    "body": "Hi, I'd like to return the jacket from order ORD-1021. It arrived about a week and a half ago and it's completely unworn, still in the original packaging with tags on. It just doesn't fit the way I hoped. Could I get a refund? Thanks!",
+    "received_at": "2026-07-07T09:12:00Z"
+  },
+  {
+    "id": "demo-002",
+    "thread_id": "t-002",
+    "from_addr": "marcus.tan@example.com",
+    "subject": "Where is my package? ORD-1017",
+    "body": "My order ORD-1017 was supposed to arrive on the 26th and it still hasn't shown up. The tracking just says in transit. I think it might be lost. Can you refund me or send another one? I need it for a trip.",
+    "received_at": "2026-07-07T10:03:00Z"
+  },
+  {
+    "id": "demo-003",
+    "thread_id": "t-003",
+    "from_addr": "priya.n@example.com",
+    "subject": "Not happy with ORD-1013",
+    "body": "I want to return order ORD-1013, the tent I bought for $249. It's fine, I just changed my mind after setting it up once in the yard. Given how much I spent I expect a full refund back to my card. Please sort this out.",
+    "received_at": "2026-07-07T11:20:00Z"
+  },
+  {
+    "id": "demo-004",
+    "thread_id": "t-004",
+    "from_addr": "sam.olsen@example.com",
+    "subject": "Another return - ORD-1016",
+    "body": "Hey, I'd like to return the water filter from ORD-1016, it's unused. I know I've sent a few things back recently but this one just isn't what I needed. Can you process the refund?",
+    "received_at": "2026-07-07T12:41:00Z"
+  },
+  {
+    "id": "demo-005",
+    "thread_id": "t-005",
+    "from_addr": "deals@promo-outdoors.example",
+    "subject": "🏕️ Summer blowout - 40% off everything this weekend!",
+    "body": "Don't miss our biggest sale of the season. Tents, packs, and more up to 40% off. Shop now before it's gone. To stop receiving these emails, unsubscribe here.",
+    "received_at": "2026-07-07T08:00:00Z"
+  }
+]

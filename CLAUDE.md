@@ -26,8 +26,16 @@ incoming email ─► PolicyStore (TF-IDF over any PDF)      src/policy_store.py
              ─► generator (LLM, RAG prompt)              src/generator.py + src/prompts.py
              ─► evaluator (3 layers + penalties)         src/evaluator.py
              ─► metric validation (3 checks)             src/validate_metric.py
-pipeline.py = batch CLI · app.py + views/ = Streamlit UI (st.navigation:
-Assistant · Settings · Evaluation) · results/*.json = outputs
+pipeline.py = batch CLI · app.py + views/ = Streamlit UI · results/*.json = outputs
+
+Automation layer (built on the same generator + evaluator):
+  inbox (MCP server | demo)  ─► email_source.py  ─► IncomingEmail[]
+                             ─► router.py  (reuses generate_reply + evaluate_reply)
+                                  AUTO / REVIEW / ESCALATE / IGNORE + confidence + priority
+                             ─► queue_store.py (SQLite results/queue.db)
+                             ─► notify.py (email digest via the connector)
+Streamlit st.navigation: Assistant · Inbox · Review · Settings · Evaluation.
+Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
 ```
 
 - **Scoring formula** (do not change weights casually — they're justified in README §5):
@@ -39,6 +47,30 @@ Assistant · Settings · Evaluation) · results/*.json = outputs
   **full policy** when the document is ≤12K chars (retrieval ranking once made it fixate on
   the wrong rule), top-k chunks otherwise. Its `rule` field must be a bare ID ("R1.1") —
   the prompt enforces this; `validate_metric.py` compares that ID against hand labels.
+
+## Automation layer (routing → queue → review)
+
+- **`src/router.py`** turns one `IncomingEmail` into a decision, reusing `generate_reply`
+  + `evaluate_reply` unchanged. Live emails have no human reply, so alignment is dropped and
+  **live confidence** = `clamp(0.6·policy_score + 0.4·quality_score − penalty, 0, 100)`.
+  Decision: ESCALATE if the judge's `escalate` flag is true or `conf < t2`; AUTO if
+  `conf ≥ t1` AND zero deterministic flags AND a rule was cited AND not escalate; else REVIEW;
+  IGNORE for non-support/no-order noise (cheap keyword gate — no LLM spent).
+- **Escalation is company-agnostic:** the compliance judge emits a boolean `escalate` +
+  `escalate_reason` derived from the policy text (prompts.py / EvaluationResult). Never hardcode
+  R6/R7 or any rule id in router code. Thresholds `t1`/`t2` live in config.json, not code.
+- **`src/email_source.py`** — one connector interface (like llm_client). `demo` reads
+  `data/demo_inbox.json` (offline, no creds); `mcp` is an MCP client to a Gmail MCP server
+  (`MCP_SERVER_URL` + `MCP_AUTH_TOKEN` in .env, `mcp` SDK, async wrapped in `asyncio.run`).
+  Tool names auto-map by capability (`_pick_tool`) with config overrides; the `mcp` import is
+  lazy so the app runs without the SDK. Live sends are gated by `config["live_send"]` (default
+  off = dry-run; `send_reply(..., dry_run=...)`).
+- **`src/queue_store.py`** — SQLite queue at `results/queue.db` (gitignored). `upsert` dedupes on
+  `email_id` and never clobbers a human status (sent/simulated/dismissed) on re-route. Priority =
+  decision band (escalate>review>auto) + value + frustration; dashboard sorts desc.
+- **`src/notify.py`** — `send_digest` emails pending review+escalation items via the connector;
+  fired on demand or after a sync when `digest_enabled`. No scheduler yet.
+- Each of router / queue_store / email_source has a `python -m src.<mod>` offline self-check.
 
 ## Data-leakage rules (grading depends on these)
 
@@ -104,10 +136,18 @@ Assistant · Settings · Evaluation) · results/*.json = outputs
 - Committed `results/*.json` should come from a real provider run, not `mock`.
 - Don't push to GitHub; commit locally at milestones.
 
-## Current state (as of 2026-07-07)
+## Current state (as of 2026-07-21)
 
-- Full pipeline verified end-to-end with `mock`; `--limit 1` trial verified live on
-  Mistral (generated 97.0 vs control 20.2, judge agreement 2/2).
-- Full 24-call run NOT yet executed — `results/` currently holds the 1-ticket trial.
-- README.md documents approach/dataset/metric/validation — keep it in sync with any
-  design change.
+- **Automation layer added** (router / email_source / queue_store / notify / config) plus
+  Inbox + Review Streamlit pages and expanded Settings (email connector, thresholds, live-send,
+  notifications). Connector = MCP client + offline demo inbox (`data/demo_inbox.json`, 5 emails
+  covering auto/review/escalate×2/ignore).
+- **Verified offline:** all three module self-checks pass; mock end-to-end sync→route→queue with
+  correct priority ordering + IGNORE gating; interactive AppTest (Inbox sync populates queue,
+  Review simulate-send flips status); batch `pipeline.py --all --limit 1` regression green with the
+  new schema; every Streamlit page renders exception-free.
+- **NOT yet verified live:** the Mistral free-tier key in `.env` now returns **401 Unauthorized**
+  (worked at build time, since expired). Semantic routing correctness (judge citing R6/R7 and
+  setting `escalate`) needs a valid `MISTRAL_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.
+- Full 24-call batch run still NOT executed — `results/` holds the original 1-ticket trial.
+- Keep README.md in sync with design changes.

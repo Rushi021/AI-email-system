@@ -14,7 +14,7 @@ import streamlit as st
 
 from src.policy_store import PolicyStore
 from src.retriever import TicketRetriever
-from src.schema import Ticket, Transaction
+from src.schema import Ticket, Transaction, detect_order_id, placeholder_transaction  # noqa: F401 (re-exported)
 
 DATA = Path("data")
 RESULTS = Path("results")
@@ -37,25 +37,6 @@ def load_everything():
     policy_store = PolicyStore(str(DATA / "policy.pdf"))
     retriever = TicketRetriever(tickets)
     return transactions, tickets, policy_store, retriever
-
-
-def detect_order_id(email: str, order_ids) -> str | None:
-    """First known order id that appears verbatim (case-insensitive) in the email."""
-    lower = email.lower()
-    hits = [(lower.find(oid.lower()), oid) for oid in order_ids if oid.lower() in lower]
-    return min(hits)[1] if hits else None
-
-
-def placeholder_transaction() -> Transaction:
-    """Neutral stand-in when the customer's email matches no known order."""
-    return Transaction(
-        order_id="",
-        customer_id="",
-        product="(no transaction record on file)",
-        price=0.0,
-        order_date="",
-        status="unknown",
-    )
 
 
 def update_env(updates: dict[str, str | None]) -> None:
