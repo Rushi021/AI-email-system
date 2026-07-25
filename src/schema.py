@@ -52,6 +52,11 @@ class IncomingEmail(BaseModel):
     subject: str = ""
     body: str = ""
     received_at: str = ""
+    # populated by src.email_parser.parse(); absent/default before that step runs
+    raw_headers: dict = Field(default_factory=dict)
+    auth_status: str = "unavailable"  # pass | fail | unavailable
+    auth_detail: str = ""
+    parse_flags: list[str] = Field(default_factory=list)
 
 
 class GeneratedReply(BaseModel):

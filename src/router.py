@@ -13,8 +13,7 @@ the policy (src/evaluator + prompts), never from a hardcoded rule id here.
 
 from __future__ import annotations
 
-import re
-
+from src.classifier import classify
 from src.config import DEFAULTS
 from src.evaluator import evaluate_reply
 from src.generator import generate_reply
@@ -22,39 +21,6 @@ from src.policy_store import PolicyStore
 from src.queue_store import DECISION_WEIGHT
 from src.retriever import TicketRetriever
 from src.schema import IncomingEmail, Ticket, detect_order_id, placeholder_transaction
-
-# cheap, generic category hints (display + future per-category thresholds)
-_CATEGORY_HINTS = {
-    "return": ["return", "refund", "send back", "money back"],
-    "shipping": ["ship", "deliver", "package", "tracking", "arrive", "lost", "missing"],
-    "warranty": ["warranty", "defect", "broke", "broken", "stopped working", "faulty"],
-    "billing": ["charge", "charged", "billing", "invoice", "duplicate", "double"],
-    "cancellation": ["cancel", "cancellation"],
-}
-_NOISE_HINTS = ["unsubscribe", "newsletter", "promotion", "no-reply", "noreply", "view in browser"]
-_SUPPORT_HINTS = sum(_CATEGORY_HINTS.values(), []) + ["order", "help", "issue", "problem", "return"]
-_FRUSTRATED_RE = re.compile(
-    r"!!!|unacceptable|furious|ridiculous|outrage|terrible|angry|worst|asap|immediately|right now",
-    re.IGNORECASE,
-)
-
-
-def _classify(text: str) -> str:
-    low = text.lower()
-    for cat, hints in _CATEGORY_HINTS.items():
-        if any(h in low for h in hints):
-            return cat
-    return "other"
-
-
-def _is_noise(text: str, has_order: bool) -> bool:
-    """Cheap noise gate so we don't spend LLM calls on non-support mail."""
-    if has_order:
-        return False
-    low = text.lower()
-    if any(h in low for h in _NOISE_HINTS):
-        return True
-    return not any(h in low for h in _SUPPORT_HINTS)
 
 
 def _decide(
@@ -93,8 +59,9 @@ def route_email(
 
     order_id = detect_order_id(text, transactions)
     txn = transactions[order_id] if order_id else placeholder_transaction()
-    category = _classify(text)
-    frustrated = bool(_FRUSTRATED_RE.search(text))
+    cls = classify(text, has_order=bool(order_id))
+    category = cls.category
+    frustrated = cls.frustrated
 
     base = {
         "email_id": email.id,
@@ -106,7 +73,7 @@ def route_email(
         "category": category,
     }
 
-    if _is_noise(text, has_order=bool(order_id)):
+    if cls.is_noise:
         return {**base, "decision": "ignore", "status": "dismissed", "confidence": 0.0,
                 "priority": _priority("ignore", txn.price, frustrated),
                 "suggested_reply": "", "judge": {}, "flags": []}
@@ -173,11 +140,7 @@ def _demo() -> None:
     # mid confidence -> review
     assert _decide(65, [], "R1.1", False, 80, 50) == "review"
 
-    assert _classify("I want a refund for my order") == "return"
-    assert _classify("where is my package") == "shipping"
-    assert _is_noise("Big summer sale! unsubscribe here", has_order=False)
-    assert not _is_noise("please help with my return, order broke", has_order=False)
-    assert not _is_noise("hi", has_order=True)  # a known order is always actionable
+    # category/noise/frustration classification moved to src.classifier — see its self-check
 
     # priority stays inside decision bands
     assert _priority("escalate", 249, True) > _priority("review", 999, True)

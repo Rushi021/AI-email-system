@@ -1,6 +1,7 @@
 .env
 config.json
 results/queue.db
+results/event_bus.db
 __pycache__/
 *.pyc
 .venv/

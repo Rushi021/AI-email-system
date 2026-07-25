@@ -30,6 +30,16 @@ pipeline.py = batch CLI · app.py + views/ = Streamlit UI · results/*.json = ou
 
 Automation layer (built on the same generator + evaluator):
   inbox (MCP server | demo)  ─► email_source.py  ─► IncomingEmail[]
+                             ─► email_parser.py  (normalize body: strip HTML/quotes/
+                                  whitespace; surface SPF/DKIM/DMARC if the connector
+                                  supplied an Authentication-Results header)
+                             ─► event_bus.py  (SQLite queue, results/event_bus.db —
+                                  publish, then drain() isolates each email in its own
+                                  try/except: retry up to 3x, else dead-letter; one bad
+                                  email never blocks the rest of the batch)
+                             ─► classifier.py  (category / noise-gate / frustration —
+                                  cheap keyword signals, zero LLM calls; own module so
+                                  it's a distinct, independently testable stage)
                              ─► router.py  (reuses generate_reply + evaluate_reply)
                                   AUTO / REVIEW / ESCALATE / IGNORE + confidence + priority
                              ─► queue_store.py (SQLite results/queue.db)
@@ -50,6 +60,35 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
 
 ## Automation layer (routing → queue → review)
 
+- **`src/email_parser.py`** — `parse(email) -> IncomingEmail` runs right after fetch, before
+  anything else touches the email. Strips HTML tags, truncates quoted-reply/signature blocks
+  ("On ... wrote:", "-----Original Message-----", trailing `>` quotes, `--` signature delimiter),
+  collapses whitespace, folds smart punctuation. Returns a new `IncomingEmail` with `body`
+  replaced by the cleaned text and `parse_flags` recording what changed (`html_stripped`,
+  `quote_stripped`, `empty_after_clean`) — so classification/retrieval/generation always see
+  one consistent shape regardless of which connector produced the raw email. Also reads
+  `auth_status` (`pass`/`fail`/`unavailable`) off a provider-supplied `Authentication-Results`
+  header when present (`raw_headers` on `IncomingEmail`) — this is **not** SPF/DKIM/DMARC
+  verification performed locally, just surfacing what the provider already checked; the demo
+  connector has no headers so it correctly reports `unavailable`, never a fabricated pass.
+- **`src/event_bus.py`** — SQLite queue at `results/event_bus.db` (gitignored), same
+  single-file pattern as `queue_store.py`. `publish()` enqueues a parsed email (idempotent per
+  `email_id`); `drain(process_fn)` pops every pending row and runs `process_fn` inside its own
+  try/except — success acks the row, a raised exception increments `attempts` and requeues
+  (< `MAX_ATTEMPTS`=3) or moves the row to `dead_letter`. This is the actual isolation
+  guarantee: one email's exception can never stop the rest of a sync from routing.
+  `views/inbox.py::_route_and_queue` is the caller — publish every fetched+parsed email, then
+  `drain()` with `process_fn = router.route_email + queue_store.upsert`; the UI surfaces any
+  dead-lettered emails in a warning instead of silently dropping them.
+- **`src/classifier.py`** — `classify(text, has_order) -> ClassificationResult` (category,
+  is_noise, frustrated). This is the same keyword/regex logic that used to live inline in
+  `router.py` (`_classify`/`_is_noise`/`_FRUSTRATED_RE`), pulled into its own module so it's a
+  distinct, independently self-checked pipeline stage rather than routing logic and signal
+  detection sharing one function. Zero LLM calls — the noise gate still runs before any model
+  spend. `router.py` imports and calls `classify()`; behavior is unchanged, only the location
+  moved. Upgrade path (README §8 roadmap item 2: a small/cheap triage model) only touches this
+  file — router.py and everything downstream depend on `ClassificationResult`, not on how it's
+  computed.
 - **`src/router.py`** turns one `IncomingEmail` into a decision, reusing `generate_reply`
   + `evaluate_reply` unchanged. Live emails have no human reply, so alignment is dropped and
   **live confidence** = `clamp(0.6·policy_score + 0.4·quality_score − penalty, 0, 100)`.
@@ -70,7 +109,8 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
   decision band (escalate>review>auto) + value + frustration; dashboard sorts desc.
 - **`src/notify.py`** — `send_digest` emails pending review+escalation items via the connector;
   fired on demand or after a sync when `digest_enabled`. No scheduler yet.
-- Each of router / queue_store / email_source has a `python -m src.<mod>` offline self-check.
+- Each of router / queue_store / email_source / email_parser / event_bus / classifier has a
+  `python -m src.<mod>` offline self-check.
 
 ## Data-leakage rules (grading depends on these)
 
@@ -134,18 +174,31 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
 - `ALIGNMENT_QUALITY_SYSTEM` is `.format()`ed → literal JSON braces in it must be `{{ }}`.
   `COMPLIANCE_JUDGE_SYSTEM` is NOT formatted → single braces are fine there.
 - Committed `results/*.json` should come from a real provider run, not `mock`.
-- Don't push to GitHub; commit locally at milestones.
+- Pushing to GitHub is fine going forward (earlier "commit locally only" note lifted
+  2026-07-25) — still create real commits, never force-push, never push secrets.
 
-## Current state (as of 2026-07-21)
+## Current state (as of 2026-07-25)
 
+- **Ingestion hardened**: `email_parser.py` normalizes every fetched email (HTML/quote/
+  signature stripping, whitespace/punctuation normalization) before classification or
+  generation ever sees it, and surfaces a provider auth signal (`auth_status`) when the
+  connector supplies headers. `event_bus.py` (SQLite, `results/event_bus.db`) sits between
+  fetch and routing — `views/inbox.py` publishes every parsed email then drains the queue with
+  per-email try/except isolation (retry ×3, then dead-letter), so one bad email can no longer
+  crash a whole inbox sync the way the old bare `for` loop could. `classifier.py` promotes the
+  category/noise/frustration signal (previously inline private helpers in `router.py`) into its
+  own explicit, independently self-checked stage; `router.py`'s behavior is unchanged, only the
+  code moved.
+- **Verified offline:** `python -m src.<mod>` self-checks pass for all six automation-layer
+  modules (router, email_source, queue_store, email_parser, event_bus, classifier), including
+  event_bus's isolated-failure/retry/dead-letter/recovery test; a `streamlit.testing.v1.AppTest`
+  run of the Inbox page (mock provider) synced the 5-email demo inbox through
+  parse → event_bus → classifier → router → queue_store end-to-end with zero exceptions and
+  zero dead-letters.
 - **Automation layer added** (router / email_source / queue_store / notify / config) plus
   Inbox + Review Streamlit pages and expanded Settings (email connector, thresholds, live-send,
   notifications). Connector = MCP client + offline demo inbox (`data/demo_inbox.json`, 5 emails
   covering auto/review/escalate×2/ignore).
-- **Verified offline:** all three module self-checks pass; mock end-to-end sync→route→queue with
-  correct priority ordering + IGNORE gating; interactive AppTest (Inbox sync populates queue,
-  Review simulate-send flips status); batch `pipeline.py --all --limit 1` regression green with the
-  new schema; every Streamlit page renders exception-free.
 - **NOT yet verified live:** the Mistral free-tier key in `.env` now returns **401 Unauthorized**
   (worked at build time, since expired). Semantic routing correctness (judge citing R6/R7 and
   setting `escalate`) needs a valid `MISTRAL_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.

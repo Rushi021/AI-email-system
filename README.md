@@ -224,6 +224,16 @@ autonomy each reply earns.
 inbox (MCP email server | built-in demo)  ── src/email_source.py ──► IncomingEmail[]
         │
         ▼
+   src/email_parser.py   strip HTML/quoted-history/signatures, normalize whitespace,
+        │                surface SPF/DKIM/DMARC when the connector supplies headers
+        ▼
+   src/event_bus.py (SQLite)   publish → drain(): each email isolated in its own
+        │                      try/except — retry ×3, else dead-letter. One bad
+        │                      email can't block the rest of a sync.
+        ▼
+   src/classifier.py   category + noise-gate + frustration (cheap keywords,
+        │               zero LLM calls — was inline in router.py, now its own stage)
+        ▼
    src/router.py   reuses generate_reply + evaluate_reply, unchanged
         │   AUTO      confident + policy-clean + a rule was cited, and policy does not mandate a human
         │   REVIEW    decent draft, not confident enough → queued for a human to approve/edit
@@ -259,15 +269,18 @@ src/retriever.py              TF-IDF retrieval over past-ticket corpus (corpus s
 src/generator.py              policy + precedent → suggested reply
 src/evaluator.py              3-layer accuracy system (the core of the submission)
 src/validate_metric.py        the three validation checks
-src/router.py                 routing engine: email → AUTO / REVIEW / ESCALATE / IGNORE
 src/email_source.py           pluggable inbox connector (demo | mcp), one interface
+src/email_parser.py           normalize a fetched email (strip HTML/quotes, auth signal)
+src/event_bus.py              SQLite ingestion queue (results/event_bus.db) — isolates failures
+src/classifier.py             category / noise-gate / frustration — its own pipeline stage
+src/router.py                 routing engine: email → AUTO / REVIEW / ESCALATE / IGNORE
 src/queue_store.py            SQLite review/action queue (results/queue.db)
 src/notify.py                 email digest of pending review + escalation items
 src/config.py                 non-secret runtime config (config.json): thresholds, source, digest
 pipeline.py                   batch CLI: --all | --generate | --evaluate | --validate
 app.py                        Streamlit entrypoint (st.navigation over views/)
 views/                        Assistant · Inbox · Review · Settings · Evaluation (internal)
-results/                      generated_replies / evaluation_results / validation_report / queue.db
+results/                      generated_replies / evaluation_results / validation_report / queue.db / event_bus.db
 ```
 
 ## 8. Future implementation — from assistant to autonomous support layer
@@ -307,28 +320,41 @@ The generator and evaluator in the middle are **exactly the modules in this repo
 ### Roadmap
 
 **Status:** items 1–4 below are now **implemented** in this repo (see §6b) — an MCP email connector
-(plus an offline demo inbox), a cheap keyword triage/noise gate, confidence-gated routing with a
-dry-run auto-send switch, and a human-in-the-loop review dashboard with an email digest. Items 5–9
-remain the forward path. Details of what shipped:
+(plus an offline demo inbox) with a normalization + durable-queue front end, a cheap keyword
+triage/noise gate as its own stage, confidence-gated routing with a dry-run auto-send switch, and a
+human-in-the-loop review dashboard with an email digest. Items 5–9 remain the forward path.
+Details of what shipped:
 
 - **Inbox integration** via the **MCP** connector (`src/email_source.py`) — the "same adapter
   interface covers any provider" idea, realized as one pluggable connector selected in Settings.
   (Gmail-API OAuth / IMAP / Pub/Sub push are the same-interface extensions still to add.)
-- **Triage** is a cheap keyword classifier + noise gate in `src/router.py` (`_classify` / `_is_noise`)
-  that routes non-support mail to IGNORE without spending an LLM call — a distilled model is the upgrade.
+- **Ingestion normalization + a durable queue** — `src/email_parser.py` strips HTML, quoted-history,
+  and signature blocks and normalizes whitespace/punctuation before anything downstream sees the
+  email, plus reads a provider's `Authentication-Results` header for SPF/DKIM/DMARC when one is
+  supplied. `src/event_bus.py` (SQLite) sits between fetch and routing so a batch sync survives one
+  email's failure — that email retries and dead-letters instead of crashing the sync. This is a
+  slice of target-architecture item 1 below (full thread reconstruction and PII redaction are not
+  built yet).
+- **Triage** is a cheap keyword classifier + noise gate, now its own module (`src/classifier.py`,
+  previously inline in `router.py`) that routes non-support mail to IGNORE without spending an LLM
+  call — a distilled model is still the upgrade (roadmap item 2).
 - **Confidence-gated auto-reply** is the T1/T2 thresholding in `src/router.py`, gated further by
   zero flags + a cited rule + no policy-mandated escalation, with a global dry-run/live-send switch.
 - **Human-in-the-loop** is the 🗂️ Review dashboard + SQLite queue + email digest.
 
 1. **Gmail inbox integration.** OAuth per mailbox, Gmail API `watch` + Pub/Sub for
    real-time push (no polling), full thread reconstruction so the model sees the
-   conversation, not one message. The same adapter interface covers IMAP and helpdesk
-   APIs (Hiver, Zendesk, Front) so the core never knows which inbox it serves.
+   conversation, not one message, and PII redaction on ingest. The same adapter interface
+   covers IMAP and helpdesk APIs (Hiver, Zendesk, Front) so the core never knows which inbox
+   it serves. *(Email fetch + body normalization + a durable ingestion queue already exist;
+   OAuth/watch/Pub-Sub, full thread reconstruction, and PII redaction do not yet.)*
 
 2. **Triage & categorization.** A small, cheap model (or a distilled classifier) labels
    every incoming email: support vs noise, category (return / shipping / warranty /
    billing / info request), sentiment, urgency, language. This is the routing signal —
    and it keeps the expensive generation model off emails that never needed it.
+   *(Category + noise-gate already exist as keyword rules in `src/classifier.py`; sentiment,
+   urgency, and language detection, and the move to a small model, are still open.)*
 
 3. **Confidence-gated auto-reply for straightforward cases.** Every draft is scored by
    the same 3-layer evaluator **before** anything is sent. Score ≥ T₁ *and* zero

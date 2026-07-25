@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src import email_source, notify, queue_store, router
+from src import email_source, event_bus, notify, queue_store, router
 from src.config import load_config
+from src.email_parser import parse as parse_email
 from src.schema import IncomingEmail
 from views.common import load_everything
 
@@ -25,29 +26,43 @@ st.caption(
 )
 
 
-def _route_and_queue(emails: list[IncomingEmail]) -> list[dict]:
-    items = []
-    progress = st.progress(0.0)
-    for i, e in enumerate(emails, 1):
-        item = router.route_email(e, transactions, policy_store, retriever, cfg)
+def _route_and_queue(emails: list[IncomingEmail]) -> tuple[list[dict], list[dict]]:
+    """Parse each email, publish it to the event bus, then drain it through
+    routing. drain() isolates each item in its own try/except, so one bad
+    email (a router/generator exception) retries and eventually dead-letters
+    instead of crashing the whole sync — every other email still gets routed.
+    Returns (routed_items, failed_outcomes)."""
+    for e in emails:
+        event_bus.publish(parse_email(e))
+
+    def _process(email: IncomingEmail) -> dict:
+        item = router.route_email(email, transactions, policy_store, retriever, cfg)
         queue_store.upsert(item)
-        items.append(item)
-        progress.progress(i / len(emails))
-    progress.empty()
-    return items
+        return item
+
+    outcomes = event_bus.drain(_process, limit=len(emails))
+    items = [o["result"] for o in outcomes if o["ok"]]
+    failed = [o for o in outcomes if not o["ok"]]
+    return items, failed
 
 
-def _summary(items: list[dict]) -> None:
+def _summary(items: list[dict], failed: list[dict]) -> None:
     from collections import Counter
 
     tally = Counter(i["decision"] for i in items)
     cols = st.columns(5)
-    cols[0].metric("Fetched", len(items))
+    cols[0].metric("Fetched", len(items) + len(failed))
     cols[1].metric("Auto-reply", tally.get("auto", 0))
     cols[2].metric("Needs review", tally.get("review", 0))
     cols[3].metric("Escalated", tally.get("escalate", 0))
     cols[4].metric("Ignored", tally.get("ignore", 0))
     st.success("Routed and queued. Open the **Review** page to act on them.")
+    if failed:
+        st.warning(
+            f"{len(failed)} email(s) failed to route and will retry on the next sync "
+            f"(dead-lettered after {event_bus.MAX_ATTEMPTS} failed attempts): "
+            + ", ".join(f"{f['email_id']} ({f['status']})" for f in failed)
+        )
 
 # ---------------------------------------------------------------- sync inbox
 st.subheader("Sync inbox")
@@ -67,8 +82,8 @@ if st.button("Sync inbox now", type="primary"):
         st.info("No messages fetched.")
     else:
         with st.spinner(f"Routing {len(emails)} message(s)…"):
-            items = _route_and_queue(emails)
-        _summary(items)
+            items, failed = _route_and_queue(emails)
+        _summary(items, failed)
         if cfg.get("digest_enabled") and cfg.get("digest_recipient"):
             d = notify.send_digest(cfg)
             st.caption(f"Digest: {d['detail']}")
@@ -81,15 +96,19 @@ st.caption("Paste one incoming email to route it through the exact same pipeline
 body = st.text_area("Email body", height=150, key="single_email")
 subject = st.text_input("Subject (optional)", key="single_subject")
 if st.button("Route this email", disabled=not body.strip()):
-    email = IncomingEmail(
+    email = parse_email(IncomingEmail(
         id=f"manual-{abs(hash(body)) % 10**8}",
         subject=subject,
         body=body,
         from_addr="pasted@manual",
-    )
-    with st.spinner("Routing…"):
-        item = router.route_email(email, transactions, policy_store, retriever, cfg)
-        queue_store.upsert(item)
+    ))
+    try:
+        with st.spinner("Routing…"):
+            item = router.route_email(email, transactions, policy_store, retriever, cfg)
+            queue_store.upsert(item)
+    except Exception as exc:  # keep the page alive — surface the failure instead
+        st.error(f"Routing failed: {type(exc).__name__}: {exc}")
+        st.stop()
     badge = {"auto": "🟢 Auto-reply", "review": "🟡 Needs review",
              "escalate": "🔴 Escalate", "ignore": "⚪ Ignore"}[item["decision"]]
     st.markdown(f"### {badge} · confidence {item['confidence']}/100")
