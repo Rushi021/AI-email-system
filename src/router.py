@@ -5,7 +5,7 @@ Reuses the existing RAG generator and 3-layer evaluator unchanged, then routes:
   AUTO      confident + clean + unambiguous, and policy does NOT mandate a human
   REVIEW    mid-confidence -> queue a suggested reply for a human to approve/edit
   ESCALATE  policy mandates a human (judge's escalate flag) OR confidence too low
-  IGNORE    no order id and the message isn't actionable (newsletter / noise)
+  IGNORE    classifier category is other (noise / non-support)
 
 Company-agnostic: the escalate decision comes from the compliance judge reading
 the policy (src/evaluator + prompts), never from a hardcoded rule id here.

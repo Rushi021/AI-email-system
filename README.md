@@ -53,10 +53,12 @@ python pipeline.py --all      # generate → evaluate → validate; writes resul
 python pipeline.py --all --limit 1   # frugal trial: exactly 5 LLM calls
 ```
 
-`LLM_PROVIDER=anthropic|openai|mistral` selects the provider (one interface in
-`src/llm_client.py` is used for generation and every judge call; Mistral runs through its
-OpenAI-compatible endpoint with free-tier rate-limit throttling built in). `LLM_MODEL`
-optionally overrides the model.
+`LLM_PROVIDER=anthropic|openai|mistral` selects the provider for **email generation**
+(and evaluation judges). `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` select the model
+used only for **email categorization** (falls back to `LLM_*` when unset). Both go through
+one interface in `src/llm_client.py`; Mistral uses its OpenAI-compatible endpoint with
+free-tier rate-limit throttling. `LLM_MODEL` optionally overrides the generation model.
+Configure both steps in Settings.
 Dataset dates are anchored around 2026-07-07; set `EVAL_TODAY=2026-07-07` if you run the
 evaluation much later, so date-window rules (30/90-day returns, 1-year warranty) still
 resolve the way the labels assume.
@@ -231,14 +233,15 @@ inbox (MCP email server | built-in demo)  ── src/email_source.py ──► I
         │                      try/except — retry ×3, else dead-letter. One bad
         │                      email can't block the rest of a sync.
         ▼
-   src/classifier.py   category + noise-gate + frustration (cheap keywords,
-        │               zero LLM calls — was inline in router.py, now its own stage)
+   src/classifier.py   LLM categorizes into refund / cancellation / complain /
+        │               billing / technical_support / general_inquiry / other (noise);
+        │               frustration stays a cheap regex for priority only
         ▼
    src/router.py   reuses generate_reply + evaluate_reply, unchanged
         │   AUTO      confident + policy-clean + a rule was cited, and policy does not mandate a human
         │   REVIEW    decent draft, not confident enough → queued for a human to approve/edit
         │   ESCALATE  the compliance judge says the policy requires a human, or confidence < T2
-        │   IGNORE    no order id and not a support message (newsletter/noise — no LLM spent)
+        │   IGNORE    category is other (noise) — no generation/eval LLM spent
         ▼
    src/queue_store.py (SQLite)  ── priority-sorted queue ──►  🗂️ Review dashboard
         └── src/notify.py  ── email digest of pending items via the same connector
@@ -272,7 +275,7 @@ src/validate_metric.py        the three validation checks
 src/email_source.py           pluggable inbox connector (demo | mcp), one interface
 src/email_parser.py           normalize a fetched email (strip HTML/quotes, auth signal)
 src/event_bus.py              SQLite ingestion queue (results/event_bus.db) — isolates failures
-src/classifier.py             category / noise-gate / frustration — its own pipeline stage
+src/classifier.py             LLM categorization (7 categories) + frustration regex
 src/router.py                 routing engine: email → AUTO / REVIEW / ESCALATE / IGNORE
 src/queue_store.py            SQLite review/action queue (results/queue.db)
 src/notify.py                 email digest of pending review + escalation items
@@ -335,9 +338,10 @@ Details of what shipped:
   email's failure — that email retries and dead-letters instead of crashing the sync. This is a
   slice of target-architecture item 1 below (full thread reconstruction and PII redaction are not
   built yet).
-- **Triage** is a cheap keyword classifier + noise gate, now its own module (`src/classifier.py`,
-  previously inline in `router.py`) that routes non-support mail to IGNORE without spending an LLM
-  call — a distilled model is still the upgrade (roadmap item 2).
+- **Triage** is an LLM/SLM classifier (`src/classifier.py`) that labels each email
+  refund / cancellation / complain / billing / technical_support / general_inquiry / other
+  and IGNORE-routes `other` before generation. Provider/model are chosen separately from
+  generation in Settings (`CLASSIFY_LLM_*`).
 - **Confidence-gated auto-reply** is the T1/T2 thresholding in `src/router.py`, gated further by
   zero flags + a cited rule + no policy-mandated escalation, with a global dry-run/live-send switch.
 - **Human-in-the-loop** is the 🗂️ Review dashboard + SQLite queue + email digest.
@@ -349,12 +353,10 @@ Details of what shipped:
    it serves. *(Email fetch + body normalization + a durable ingestion queue already exist;
    OAuth/watch/Pub-Sub, full thread reconstruction, and PII redaction do not yet.)*
 
-2. **Triage & categorization.** A small, cheap model (or a distilled classifier) labels
-   every incoming email: support vs noise, category (return / shipping / warranty /
-   billing / info request), sentiment, urgency, language. This is the routing signal —
-   and it keeps the expensive generation model off emails that never needed it.
-   *(Category + noise-gate already exist as keyword rules in `src/classifier.py`; sentiment,
-   urgency, and language detection, and the move to a small model, are still open.)*
+2. **Triage & categorization.** A small/cheap model labels every incoming email into the
+   support categories above (with `other` as the noise gate) so the expensive generation
+   model stays off non-support mail. *(LLM categorization is in `src/classifier.py`;
+   sentiment/urgency/language as separate signals are still open.)*
 
 3. **Confidence-gated auto-reply for straightforward cases.** Every draft is scored by
    the same 3-layer evaluator **before** anything is sent. Score ≥ T₁ *and* zero

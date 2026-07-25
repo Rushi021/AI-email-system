@@ -2,6 +2,10 @@
 
 Key handling rules: existing key values are never read back, printed, or
 logged; only presence ("configured") is shown. .env stays gitignored.
+
+Two LLM steps can use different providers/models:
+  - Email generation  → LLM_PROVIDER / LLM_MODEL
+  - Email categorization → CLASSIFY_LLM_PROVIDER / CLASSIFY_LLM_MODEL
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import os
 import streamlit as st
 
 from src import email_source, llm_client, notify
+from src.classifier import CATEGORY_LABELS
 from src.config import load_config, save_config
 from views.common import DATA, PROVIDER_KEY_VARS, load_everything, update_env
 
@@ -42,54 +47,135 @@ if uploaded is not None and st.button("Replace policy and re-index", type="prima
 
 st.divider()
 
-# ----------------------------------------------------------------- llm provider
-st.header("LLM provider")
+# ----------------------------------------------------------------- llm by step
+st.header("LLM models by pipeline step")
+st.caption(
+    "Choose a provider and model for each step. API keys are stored per provider "
+    "(shared if both steps use the same vendor). Leave a key blank to keep the existing one."
+)
 
 providers = list(PROVIDER_KEY_VARS)
-current_provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+gen_provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+cls_provider = (
+    os.getenv("CLASSIFY_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "anthropic"
+).lower()
+if cls_provider not in providers:
+    cls_provider = "mistral" if "mistral" in providers else providers[0]
 
 for p, key_var in PROVIDER_KEY_VARS.items():
     configured = bool(os.getenv(key_var))
-    active = " · **active**" if p == current_provider else ""
-    st.markdown(f"- {p}: {'configured ✓' if configured else 'no API key'}{active}")
+    used = []
+    if p == gen_provider:
+        used.append("generation")
+    if p == cls_provider:
+        used.append("categorization")
+    where = f" · used for: {', '.join(used)}" if used else ""
+    st.markdown(f"- {p}: {'configured ✓' if configured else 'no API key'}{where}")
 
-with st.form("provider_form"):
-    provider = st.selectbox(
-        "Provider",
+# ---- Email generation
+st.subheader("1. Email generation")
+st.caption(
+    "Drafts suggested replies (and runs evaluation judges). "
+    "Env: `LLM_PROVIDER` / `LLM_MODEL`."
+)
+with st.form("generate_provider_form"):
+    g_provider = st.selectbox(
+        "Provider for email generation",
         providers,
-        index=providers.index(current_provider) if current_provider in providers else 0,
+        index=providers.index(gen_provider) if gen_provider in providers else 0,
+        key="gen_provider",
     )
-    api_key = st.text_input(
-        "API key (leave blank to keep the existing one)", type="password"
+    g_api_key = st.text_input(
+        "API key for this provider (leave blank to keep existing)",
+        type="password",
+        key="gen_api_key",
     )
-    model = st.text_input(
-        "Model override (optional — blank uses the provider default)",
+    g_model = st.text_input(
+        "Model for email generation (blank = provider default)",
         value=os.getenv("LLM_MODEL", ""),
+        key="gen_model",
+        help=f"Defaults: {llm_client.DEFAULT_MODELS}",
     )
-    if st.form_submit_button("Save", type="primary"):
+    if st.form_submit_button("Save generation model", type="primary"):
         updates: dict[str, str | None] = {
-            "LLM_PROVIDER": provider,
-            "LLM_MODEL": model.strip() or None,
+            "LLM_PROVIDER": g_provider,
+            "LLM_MODEL": g_model.strip() or None,
         }
-        if api_key.strip():
-            updates[PROVIDER_KEY_VARS[provider]] = api_key.strip()
+        if g_api_key.strip():
+            updates[PROVIDER_KEY_VARS[g_provider]] = g_api_key.strip()
         update_env(updates)
-        st.success(f"Saved — provider set to {provider}.")
+        st.success(f"Saved — email generation uses {g_provider}.")
         st.rerun()
 
-if st.button("Test connection"):
-    with st.spinner("Making one tiny LLM call..."):
+if st.button("Test generation connection"):
+    with st.spinner("Making one tiny generation LLM call..."):
         try:
             out = llm_client.complete(
                 "You are a connectivity check. Reply with the single word OK.",
                 "ping",
                 max_tokens=8,
+                purpose="generate",
             )
-            provider_now = os.getenv("LLM_PROVIDER", "anthropic").lower()
-            model_now = os.getenv("LLM_MODEL") or llm_client.DEFAULT_MODELS.get(provider_now, "?")
-            st.success(f"Connected — {provider_now} ({model_now}) replied: {out.strip()[:40]}")
-        except Exception as exc:  # surface the failure without touching key values
-            st.error(f"Connection failed: {type(exc).__name__}: {exc}")
+            p, m = llm_client.resolve_provider_model("generate")
+            st.success(f"Connected — generation {p} ({m}) replied: {out.strip()[:40]}")
+        except Exception as exc:
+            st.error(f"Generation connection failed: {type(exc).__name__}: {exc}")
+
+# ---- Email categorization
+st.subheader("2. Email categorization")
+st.caption(
+    "Classifies each inbound email into: "
+    + ", ".join(CATEGORY_LABELS.values())
+    + ". Used only for triage / IGNORE noise — not for drafting replies. "
+    "Env: `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` (falls back to generation settings if unset)."
+)
+# Default the classify form toward mistral when nothing is configured yet.
+default_cls = os.getenv("CLASSIFY_LLM_PROVIDER", "mistral").lower()
+if default_cls not in providers:
+    default_cls = cls_provider
+
+with st.form("classify_provider_form"):
+    c_provider = st.selectbox(
+        "Provider for email categorization",
+        providers,
+        index=providers.index(default_cls) if default_cls in providers else 0,
+        key="cls_provider",
+    )
+    c_api_key = st.text_input(
+        "API key for this provider (leave blank to keep existing)",
+        type="password",
+        key="cls_api_key",
+    )
+    c_model = st.text_input(
+        "Model for email categorization (blank = provider default)",
+        value=os.getenv("CLASSIFY_LLM_MODEL", ""),
+        key="cls_model",
+        help=f"Defaults: {llm_client.DEFAULT_MODELS}",
+    )
+    if st.form_submit_button("Save categorization model", type="primary"):
+        updates = {
+            "CLASSIFY_LLM_PROVIDER": c_provider,
+            "CLASSIFY_LLM_MODEL": c_model.strip() or None,
+        }
+        if c_api_key.strip():
+            updates[PROVIDER_KEY_VARS[c_provider]] = c_api_key.strip()
+        update_env(updates)
+        st.success(f"Saved — email categorization uses {c_provider}.")
+        st.rerun()
+
+if st.button("Test categorization connection"):
+    with st.spinner("Making one tiny categorization LLM call..."):
+        try:
+            out = llm_client.complete(
+                "You are a connectivity check. Reply with the single word OK.",
+                "ping",
+                max_tokens=8,
+                purpose="classify",
+            )
+            p, m = llm_client.resolve_provider_model("classify")
+            st.success(f"Connected — categorization {p} ({m}) replied: {out.strip()[:40]}")
+        except Exception as exc:
+            st.error(f"Categorization connection failed: {type(exc).__name__}: {exc}")
 
 st.divider()
 

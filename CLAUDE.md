@@ -37,9 +37,10 @@ Automation layer (built on the same generator + evaluator):
                                   publish, then drain() isolates each email in its own
                                   try/except: retry up to 3x, else dead-letter; one bad
                                   email never blocks the rest of the batch)
-                             ─► classifier.py  (category / noise-gate / frustration —
-                                  cheap keyword signals, zero LLM calls; own module so
-                                  it's a distinct, independently testable stage)
+                             ─► classifier.py  (LLM categorizes into refund /
+                                cancellation / complain / billing / technical_support /
+                                general_inquiry / other=noise; frustration = cheap regex;
+                                CLASSIFY_LLM_* provider/model, separate from generation)
                              ─► router.py  (reuses generate_reply + evaluate_reply)
                                   AUTO / REVIEW / ESCALATE / IGNORE + confidence + priority
                              ─► queue_store.py (SQLite results/queue.db)
@@ -81,20 +82,17 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
   `drain()` with `process_fn = router.route_email + queue_store.upsert`; the UI surfaces any
   dead-lettered emails in a warning instead of silently dropping them.
 - **`src/classifier.py`** — `classify(text, has_order) -> ClassificationResult` (category,
-  is_noise, frustrated). This is the same keyword/regex logic that used to live inline in
-  `router.py` (`_classify`/`_is_noise`/`_FRUSTRATED_RE`), pulled into its own module so it's a
-  distinct, independently self-checked pipeline stage rather than routing logic and signal
-  detection sharing one function. Zero LLM calls — the noise gate still runs before any model
-  spend. `router.py` imports and calls `classify()`; behavior is unchanged, only the location
-  moved. Upgrade path (README §8 roadmap item 2: a small/cheap triage model) only touches this
-  file — router.py and everything downstream depend on `ClassificationResult`, not on how it's
-  computed.
+  is_noise, frustrated). Uses `llm_client.complete(..., purpose="classify")` to pick one of
+  refund / cancellation / complain / billing / technical_support / general_inquiry / other.
+  `other` ⇒ `is_noise` (router IGNORE, no generation). If `has_order` and the model returns
+  `other`, remap to `general_inquiry` so order mail is never dismissed. Frustration stays a
+  cheap regex for queue priority only. Prompt lives in `prompts.CLASSIFIER_*`.
 - **`src/router.py`** turns one `IncomingEmail` into a decision, reusing `generate_reply`
   + `evaluate_reply` unchanged. Live emails have no human reply, so alignment is dropped and
   **live confidence** = `clamp(0.6·policy_score + 0.4·quality_score − penalty, 0, 100)`.
   Decision: ESCALATE if the judge's `escalate` flag is true or `conf < t2`; AUTO if
   `conf ≥ t1` AND zero deterministic flags AND a rule was cited AND not escalate; else REVIEW;
-  IGNORE for non-support/no-order noise (cheap keyword gate — no LLM spent).
+  IGNORE when classifier category is `other` (noise) — no generation/eval spent.
 - **Escalation is company-agnostic:** the compliance judge emits a boolean `escalate` +
   `escalate_reason` derived from the policy text (prompts.py / EvaluationResult). Never hardcode
   R6/R7 or any rule id in router code. Thresholds `t1`/`t2` live in config.json, not code.
@@ -123,17 +121,17 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
 
 ## LLM access
 
-- One interface: `src/llm_client.py :: complete(system, user, max_tokens)`. All generation
-  and judge calls go through it. Provider via `LLM_PROVIDER` env:
-  `anthropic` (default, `claude-opus-4-8`) · `openai` (`gpt-4o`) ·
-  `mistral` (`mistral-small-latest`, via Mistral's OpenAI-compatible endpoint at
-  `https://api.mistral.ai/v1`, throttled to ~1 req/s for the free tier, `max_retries=8`) ·
-  `mock` (deterministic offline stub for plumbing tests only — scores are meaningless).
-- **Current active setup: `LLM_PROVIDER=mistral` with `MISTRAL_API_KEY` in `.env`**
-  (free tier — keep calls frugal; a full pipeline run ≈ 24 calls).
-- `LLM_MODEL` overrides the model. Judges return JSON parsed by
-  `llm_client.extract_json()` (handles fences/prose — don't replace with bare
-  `json.loads`).
+- One interface: `src/llm_client.py :: complete(system, user, max_tokens, purpose=...)`.
+  `purpose="generate"` (default) uses `LLM_PROVIDER` / `LLM_MODEL` — generation + judges.
+  `purpose="classify"` uses `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` (falls back to
+  `LLM_*`). Providers: `anthropic` (default, `claude-opus-4-8`) · `openai` (`gpt-4o`) ·
+  `mistral` (`mistral-small-latest`, OpenAI-compatible at `https://api.mistral.ai/v1`,
+  throttled ~1 req/s, `max_retries=8`) · `mock` (offline stub). Settings exposes both steps.
+- **Current active setup: generation + classify on `mistral` with `MISTRAL_API_KEY` in `.env`**
+  (free tier — keep calls frugal; a full pipeline run ≈ 24 generation/judge calls; inbox
+  sync adds 1 classify call per email).
+- Judges return JSON parsed by `llm_client.extract_json()` (handles fences/prose — don't
+  replace with bare `json.loads`).
 - Never print, log, or commit key values. `.env` is gitignored.
 
 ## Environment & how to run
@@ -185,10 +183,9 @@ Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
   connector supplies headers. `event_bus.py` (SQLite, `results/event_bus.db`) sits between
   fetch and routing — `views/inbox.py` publishes every parsed email then drains the queue with
   per-email try/except isolation (retry ×3, then dead-letter), so one bad email can no longer
-  crash a whole inbox sync the way the old bare `for` loop could. `classifier.py` promotes the
-  category/noise/frustration signal (previously inline private helpers in `router.py`) into its
-  own explicit, independently self-checked stage; `router.py`'s behavior is unchanged, only the
-  code moved.
+  crash a whole inbox sync the way the old bare `for` loop could. `classifier.py` is an LLM
+  triage stage (7 categories; `other` = noise/IGNORE) with separate Settings model selection
+  from generation (`CLASSIFY_LLM_*` vs `LLM_*`).
 - **Verified offline:** `python -m src.<mod>` self-checks pass for all six automation-layer
   modules (router, email_source, queue_store, email_parser, event_bus, classifier), including
   event_bus's isolated-failure/retry/dead-letter/recovery test; a `streamlit.testing.v1.AppTest`

@@ -1,6 +1,11 @@
-"""Single pluggable LLM interface used by both the generator and every judge.
+"""Single pluggable LLM interface used by generation, classification, and judges.
 
-Provider is selected with the LLM_PROVIDER env var:
+Provider is selected with env vars (Settings writes these into .env):
+  - LLM_PROVIDER / LLM_MODEL                 → email generation (+ evaluation judges)
+  - CLASSIFY_LLM_PROVIDER / CLASSIFY_LLM_MODEL → email categorization
+    (falls back to LLM_* when unset)
+
+Providers:
   - "anthropic" (default) -> Claude via the official anthropic SDK
   - "openai"              -> OpenAI via the official openai SDK
   - "mistral"             -> Mistral via its OpenAI-compatible endpoint
@@ -8,8 +13,6 @@ Provider is selected with the LLM_PROVIDER env var:
   - "mock"                -> deterministic offline stub, used only to smoke-test
                              the pipeline plumbing without an API key. Not part
                              of the graded flow; results are meaningless.
-
-Model can be overridden with LLM_MODEL.
 """
 
 from __future__ import annotations
@@ -33,10 +36,39 @@ DEFAULT_MODELS = {
 _last_mistral_call = 0.0
 
 
-def complete(system: str, user: str, max_tokens: int = 1200) -> str:
-    """One-shot completion. Same signature for every provider."""
-    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-    model = os.getenv("LLM_MODEL", DEFAULT_MODELS.get(provider, ""))
+def resolve_provider_model(purpose: str = "generate") -> tuple[str, str]:
+    """Return (provider, model) for a pipeline step. Classify falls back to generate."""
+    if purpose == "classify":
+        provider = (os.getenv("CLASSIFY_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "anthropic").lower()
+        if os.getenv("CLASSIFY_LLM_MODEL"):
+            model = os.environ["CLASSIFY_LLM_MODEL"]
+        elif os.getenv("CLASSIFY_LLM_PROVIDER"):
+            # Different provider chosen for classify — use that provider's default,
+            # not a generate-model that may belong to another vendor.
+            model = DEFAULT_MODELS.get(provider, "")
+        else:
+            model = os.getenv("LLM_MODEL") or DEFAULT_MODELS.get(provider, "")
+        return provider, model
+
+    provider = (os.getenv("LLM_PROVIDER") or "anthropic").lower()
+    model = os.getenv("LLM_MODEL") or DEFAULT_MODELS.get(provider, "")
+    return provider, model
+
+
+def complete(
+    system: str,
+    user: str,
+    max_tokens: int = 1200,
+    *,
+    purpose: str = "generate",
+) -> str:
+    """One-shot completion. Same signature for every provider.
+
+    purpose="generate" (default) uses LLM_PROVIDER / LLM_MODEL.
+    purpose="classify" uses CLASSIFY_LLM_PROVIDER / CLASSIFY_LLM_MODEL
+    (falling back to the generate pair when unset).
+    """
+    provider, model = resolve_provider_model(purpose)
 
     if provider == "anthropic":
         import anthropic
@@ -110,6 +142,27 @@ def extract_json(text: str) -> dict:
 def _mock_complete(system: str, user: str) -> str:
     """Deterministic stub for offline plumbing tests only."""
     seed = int(hashlib.sha256(user.encode()).hexdigest(), 16)
+    sys_l = system.lower()
+    # Classifier prompt — return a category JSON so routing self-checks work offline.
+    if "categor" in sys_l and "refund" in sys_l:
+        low = user.lower()
+        if any(h in low for h in ("unsubscribe", "newsletter", "promotion", "sale")):
+            cat = "other"
+        elif any(h in low for h in ("cancel",)):
+            cat = "cancellation"
+        elif any(h in low for h in ("charge", "billing", "invoice", "duplicate")):
+            cat = "billing"
+        elif any(h in low for h in ("refund", "return", "money back")):
+            cat = "refund"
+        elif any(h in low for h in ("broken", "defect", "warranty", "not working", "error")):
+            cat = "technical_support"
+        elif any(h in low for h in ("complain", "unacceptable", "furious", "terrible", "angry")):
+            cat = "complain"
+        elif any(h in low for h in ("help", "question", "how do", "wondering")):
+            cat = "general_inquiry"
+        else:
+            cat = "general_inquiry"
+        return json.dumps({"category": cat})
     if "JSON" in system or "json" in system:
         score = 2 + seed % 4  # 2-5, deterministic per input
         return json.dumps({
@@ -125,6 +178,8 @@ def _mock_complete(system: str, user: str) -> str:
             "clarity": score,
             "actionability": score,
             "quality_justification": "mock",
+            "escalate": False,
+            "escalate_reason": "",
         })
     return (
         "Hi, thanks for reaching out about your order. Based on our policy I've "

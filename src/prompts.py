@@ -93,3 +93,25 @@ ALIGNMENT_QUALITY_USER = """## Incoming customer email
 
 ## Generated reply being scored
 {reply}"""
+
+
+CLASSIFIER_SYSTEM = """You classify inbound customer emails into exactly one category.
+
+Categories (pick exactly one):
+- refund — return, refund, exchange, or money-back request
+- cancellation — cancel an order or subscription before/after ship
+- complain — complaint about service, quality, or experience (not primarily asking for a specific remedy)
+- billing — charges, invoices, duplicate payments, payment method issues
+- technical_support — product defect, breakage, how-to / troubleshooting
+- general_inquiry — policy questions, shipping ETAs, product info, or other actionable support that does not fit above
+- other — noise: newsletters, promotions, spam, unsubscribe, or clearly not a support request
+
+Rules:
+- Choose the single best primary intent. If the customer asks for a refund because of a complaint, prefer refund.
+- Use other only when the message is not a real support request.
+- Respond with ONLY a JSON object: {"category": "<one of the slugs above>"}"""
+
+CLASSIFIER_USER = """## Email
+{email}
+
+Classify this email."""

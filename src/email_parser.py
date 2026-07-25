@@ -83,7 +83,7 @@ def _auth_from_headers(headers: dict) -> tuple[str, str]:
 def parse(email: IncomingEmail) -> IncomingEmail:
     """Return a new IncomingEmail with a cleaned body and auth signal attached.
     Never raises on malformed input — worst case the body ends up empty and
-    parse_flags records why, so the classifier's noise gate routes it to
+    parse_flags records why, so the classifier can still triage empty bodies to
     ignore instead of the pipeline crashing on it."""
     flags: list[str] = []
     body = email.body or ""

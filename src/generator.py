@@ -40,7 +40,9 @@ def generate_reply(
         examples=examples,
         email=email,
     )
-    reply = llm_client.complete(prompts.GENERATOR_SYSTEM, user_prompt).strip()
+    reply = llm_client.complete(
+        prompts.GENERATOR_SYSTEM, user_prompt, purpose="generate"
+    ).strip()
 
     return GeneratedReply(
         ticket_id=ticket_id,

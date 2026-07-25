@@ -1,33 +1,64 @@
-"""Classification stage: turn parsed email text into one structured signal —
-category, noise/spam gate, frustration — before context lookup and generation
-ever run. Cheap and deterministic (keyword/regex only, zero LLM calls) so the
-noise gate can drop non-support mail before spending a single model call.
+"""Classification stage: LLM categorizes a parsed email before generation.
 
-This used to be three private helpers inline in src.router. Pulled out here so
-it's a distinct, independently testable pipeline stage — matching the
-Classify step in the architecture — rather than routing logic and signal
-detection living in the same function. src.router now just calls classify().
+Categories (slugs): refund | cancellation | complain | billing |
+technical_support | general_inquiry | other
 
-Upgrade path: swap the keyword heuristics below for a small/cheap model
-(README §8 roadmap item 2) without router.py or anything downstream noticing —
-they only depend on the ClassificationResult shape.
+`other` is the noise gate — router IGNORE without drafting a reply.
+Frustration stays a cheap regex (priority boost only; not an LLM field).
+
+Provider/model come from CLASSIFY_LLM_* (Settings → Email categorization),
+falling back to LLM_* via llm_client.complete(purpose="classify").
 """
 
 from __future__ import annotations
 
+import os
 import re
 
 from pydantic import BaseModel
 
-_CATEGORY_HINTS = {
-    "return": ["return", "refund", "send back", "money back"],
-    "shipping": ["ship", "deliver", "package", "tracking", "arrive", "lost", "missing"],
-    "warranty": ["warranty", "defect", "broke", "broken", "stopped working", "faulty"],
-    "billing": ["charge", "charged", "billing", "invoice", "duplicate", "double"],
-    "cancellation": ["cancel", "cancellation"],
+from src import llm_client, prompts
+
+CATEGORIES = (
+    "refund",
+    "cancellation",
+    "complain",
+    "billing",
+    "technical_support",
+    "general_inquiry",
+    "other",
+)
+
+# Human labels shown in Settings / docs — keep in sync with CATEGORIES.
+CATEGORY_LABELS = {
+    "refund": "Refund",
+    "cancellation": "Cancellation",
+    "complain": "Complain",
+    "billing": "Billing",
+    "technical_support": "Technical support",
+    "general_inquiry": "General inquiry",
+    "other": "Other (noise)",
 }
-_NOISE_HINTS = ["unsubscribe", "newsletter", "promotion", "no-reply", "noreply", "view in browser"]
-_SUPPORT_HINTS = sum(_CATEGORY_HINTS.values(), []) + ["order", "help", "issue", "problem", "return"]
+
+_ALIASES = {
+    "refund": "refund",
+    "return": "refund",
+    "cancellation": "cancellation",
+    "cancel": "cancellation",
+    "complain": "complain",
+    "complaint": "complain",
+    "billing": "billing",
+    "technical support": "technical_support",
+    "technical_support": "technical_support",
+    "tech support": "technical_support",
+    "general inquiry": "general_inquiry",
+    "general_inquiry": "general_inquiry",
+    "inquiry": "general_inquiry",
+    "other": "other",
+    "other (noise)": "other",
+    "noise": "other",
+}
+
 _FRUSTRATED_RE = re.compile(
     r"!!!|unacceptable|furious|ridiculous|outrage|terrible|angry|worst|asap|immediately|right now",
     re.IGNORECASE,
@@ -40,48 +71,73 @@ class ClassificationResult(BaseModel):
     frustrated: bool
 
 
-def classify_category(text: str) -> str:
-    low = text.lower()
-    for cat, hints in _CATEGORY_HINTS.items():
-        if any(h in low for h in hints):
-            return cat
-    return "other"
-
-
-def is_noise(text: str, has_order: bool) -> bool:
-    """Cheap noise gate so we don't spend LLM calls on non-support mail."""
-    if has_order:
-        return False
-    low = text.lower()
-    if any(h in low for h in _NOISE_HINTS):
-        return True
-    return not any(h in low for h in _SUPPORT_HINTS)
+def normalize_category(raw: str) -> str:
+    s = re.sub(r"[\s\-]+", " ", (raw or "").strip().lower().strip("\"'"))
+    if s in _ALIASES:
+        return _ALIASES[s]
+    underscored = s.replace(" ", "_")
+    if underscored in CATEGORIES:
+        return underscored
+    if underscored in _ALIASES:
+        return _ALIASES[underscored]
+    return "general_inquiry"
 
 
 def is_frustrated(text: str) -> bool:
     return bool(_FRUSTRATED_RE.search(text))
 
 
-def classify(text: str, has_order: bool) -> ClassificationResult:
+def classify(text: str, has_order: bool = False) -> ClassificationResult:
+    """Categorize email via the classify-purpose LLM. `other` => noise/IGNORE.
+
+    If an order id is present, never treat as noise — remap other → general_inquiry
+    so real order mail isn't dismissed.
+    """
+    raw = llm_client.complete(
+        prompts.CLASSIFIER_SYSTEM,
+        prompts.CLASSIFIER_USER.format(email=text),
+        max_tokens=64,
+        purpose="classify",
+    )
+    try:
+        data = llm_client.extract_json(raw)
+        category = normalize_category(str(data.get("category", "")))
+    except (ValueError, TypeError, AttributeError):
+        # Bare slug / label fallback if the model skipped JSON
+        category = normalize_category(raw.strip().splitlines()[0] if raw.strip() else "")
+
+    if category == "other" and has_order:
+        category = "general_inquiry"
+
     return ClassificationResult(
-        category=classify_category(text),
-        is_noise=is_noise(text, has_order),
+        category=category,
+        is_noise=(category == "other"),
         frustrated=is_frustrated(text),
     )
 
 
 def _demo() -> None:
-    """Offline self-check — no LLM calls (moved from src.router's self-check)."""
-    assert classify_category("I want a refund for my order") == "return"
-    assert classify_category("where is my package") == "shipping"
-    assert is_noise("Big summer sale! unsubscribe here", has_order=False)
-    assert not is_noise("please help with my return, order broke", has_order=False)
-    assert not is_noise("hi", has_order=True)  # a known order is always actionable
-    assert is_frustrated("this is UNACCEPTABLE, I need this fixed ASAP")
-    assert not is_frustrated("could you help when you get a chance")
+    """Offline self-check — uses mock LLM (no API key)."""
+    os.environ["CLASSIFY_LLM_PROVIDER"] = "mock"
+    os.environ.setdefault("LLM_PROVIDER", "mock")
+
+    assert normalize_category("Refund") == "refund"
+    assert normalize_category("Technical support") == "technical_support"
+    assert normalize_category("Other (noise)") == "other"
+    assert normalize_category("complaint") == "complain"
 
     r = classify("I want a refund for my order, this is ridiculous", has_order=True)
-    assert r.category == "return" and not r.is_noise and r.frustrated
+    assert r.category == "refund" and not r.is_noise and r.frustrated
+
+    noise = classify("Big summer sale! unsubscribe here", has_order=False)
+    assert noise.category == "other" and noise.is_noise
+
+    # Order id present → never ignore even if model says other
+    kept = classify("unsubscribe from deals about order ORD-1", has_order=True)
+    assert kept.category == "general_inquiry" and not kept.is_noise
+
+    assert is_frustrated("this is UNACCEPTABLE, I need this fixed ASAP")
+    assert not is_frustrated("could you help when you get a chance")
     print("classifier self-check OK")
 
 
