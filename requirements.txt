@@ -19,5 +19,8 @@ instructor
 langchain-community>=0.4.2
 langchain-openai>=1.4
 langchain-core>=1.5.1
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart
 
 
