@@ -13,7 +13,7 @@ from pathlib import Path
 CONFIG_PATH = Path("config.json")
 
 DEFAULTS: dict = {
-    "email_source": "demo",  # demo | mcp
+    "email_source": "demo",  # demo (offline, empty inbox) | mcp
     # routing thresholds on the 0-100 live-confidence scale
     "t1": 80.0,  # >= t1 (and clean) -> auto-reply
     "t2": 50.0,  # <  t2            -> escalate

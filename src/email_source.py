@@ -1,8 +1,10 @@
 """Pluggable inbox connector — one interface, mirroring src/llm_client.
 
 Providers (config["email_source"]):
-  - "demo": reads data/demo_inbox.json; sends are recorded, never leave the box.
-            No credentials — the whole pipeline is demoable offline.
+  - "demo": offline mode. No sample mailbox ships with the app; fetch returns
+            an empty list. Sends are recorded locally and never leave the box.
+            Optional: drop a JSON array of IncomingEmail-shaped objects at
+            data/demo_inbox.json if you want a local fixture for development.
   - "mcp" : the app is an MCP client to a Gmail (or any) MCP server. Connects to
             MCP_SERVER_URL with bearer MCP_AUTH_TOKEN via the mcp Python SDK,
             discovers tools, and maps them by capability to search / get / send.

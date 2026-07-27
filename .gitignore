@@ -7,6 +7,10 @@ results/ragas_scores.db
 results/user_examples.db
 results/app.db
 results/policy_index/
+results/generated_replies.json
+results/evaluation_results.json
+results/validation_report.json
+data/demo_inbox.json
 __pycache__/
 *.pyc
 .venv/

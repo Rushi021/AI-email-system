@@ -339,6 +339,13 @@ def evaluation_quality():
     ragas_rows = get_structured_store().query("ragas_scores", order_by="-timestamp")
     results = json.loads(eval_path.read_text()) if eval_path.exists() else []
     source = ragas_rows if ragas_rows else results
+    # Drop offline mock rows so the Evaluation page never shows stub scores as real.
+    def _is_mock(row: dict) -> bool:
+        details = row.get("faithfulness_details") or {}
+        blob = details if isinstance(details, str) else json.dumps(details)
+        return "mock ragas" in blob.lower() or "mock ragas" in str(row.get("note", "")).lower()
+
+    source = [r for r in source if not _is_mock(r)]
     if not source:
         return {"rows": [], "averages": None}
 

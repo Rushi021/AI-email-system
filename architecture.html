@@ -312,7 +312,7 @@ flowchart LR
           <p class="stage-tag">ingest · external</p>
           <h3>Fetch unread mail</h3>
           <p><code>src/email_source.py · fetch_unread()</code> — one connector interface.
-            <code>demo</code> reads <code>data/demo_inbox.json</code> offline;
+            <code>demo</code> is offline (empty inbox by default; dry-run sends);
             <code>mcp</code> is an MCP client to a Gmail (or any) MCP server. Tools are
             auto-mapped by capability; Settings holds the server URL + token.</p>
           <div class="chips"><span class="chip">demo | mcp</span><span class="chip">IncomingEmail[]</span></div>

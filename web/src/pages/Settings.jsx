@@ -101,10 +101,10 @@ export default function Settings() {
         <SaveBtn busy={busy === "gates"} onClick={() => saveConfig(["faithfulness_gate", "retrieval_disagreement_sample_rate", "audit_sample_rate"], "gates")}>Save evaluation gates</SaveBtn>
       </Section>
 
-      <Section title="Email connection" note="Use demo for the built-in sample inbox, or mcp to connect a live mailbox.">
+      <Section title="Email connection" note="demo is offline (empty inbox, dry-run sends). mcp connects to a live mailbox via an MCP server.">
         <Field label="Email source">
           <select value={cfg.email_source} onChange={(e) => set("email_source", e.target.value)}>
-            <option value="demo">demo</option><option value="mcp">mcp</option>
+            <option value="demo">demo (offline)</option><option value="mcp">mcp</option>
           </select>
         </Field>
         <div className="btn-row">

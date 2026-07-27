@@ -30,7 +30,7 @@ You land on the **✉️ Assistant** page; the left nav switches between the fiv
 | Page | What you do there |
 |---|---|
 | **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. Expand **"How accurate is this reply?"** for on-demand RAGAS scoring (faithfulness / relevancy / context precision). |
-| **📥 Inbox** | **Sync inbox** to fetch unread mail from the connected source (an MCP email server, or the built-in demo inbox) and route every message through the pipeline; or paste a single email to route it. Each email is classified **auto-reply / needs-review / escalate / ignore** and dropped into the queue. |
+| **📥 Inbox** | **Sync inbox** to fetch unread mail from the connected source (MCP email server, or offline demo mode) and route every message through the pipeline; or paste a single email to route it. Each email is classified **auto-reply / needs-review / escalate / ignore** and dropped into the queue. |
 | **🗂️ Review** | The human-action dashboard: Escalations · Needs review · Auto · Audit sample · Done. Send/edit/dismiss, flag hallucinations, and confirm escalation audits — every action writes a `feedback_events` row. |
 | **⚙️ Settings** | Upload a policy document; manage example replies; LLM providers; email connector; automation thresholds; **evaluation gates** (faithfulness gate, disagreement/audit sample rates); **storage** (local / Postgres / S3 / Azure / GCS). |
 | **📊 Evaluation** | Two unblended panels: Response Quality (RAGAS) and System Reliability (human feedback with n + Wilson CIs). |
@@ -239,7 +239,7 @@ them into an end-to-end support system. **The metric is the control system**: it
 autonomy each reply earns.
 
 ```
-inbox (MCP email server | built-in demo)  ── src/email_source.py ──► IncomingEmail[]
+inbox (MCP email server | offline demo)  ── src/email_source.py ──► IncomingEmail[]
         │
         ▼
    src/email_parser.py   strip HTML/quoted-history/signatures, normalize whitespace,
@@ -268,9 +268,9 @@ inbox (MCP email server | built-in demo)  ── src/email_source.py ──► I
 - **Escalation stays company-agnostic.** The generator's structured `remedy.escalate` is derived
   from the policy text — the router never hardcodes a rule id. Swap the policy document and
   escalation behavior changes with it.
-- **Email connector.** One pluggable interface (mirroring `llm_client`). `demo` runs fully offline
-  from `data/demo_inbox.json`; `mcp` makes the app an **MCP client** to a Gmail (or any) MCP server —
-  server URL + token in Settings, tools auto-mapped by capability.
+- **Email connector.** One pluggable interface (mirroring `llm_client`). `demo` is offline
+  (empty inbox by default; dry-run sends only); `mcp` makes the app an **MCP client** to a
+  Gmail (or any) MCP server — server URL + token in Settings, tools auto-mapped by capability.
 - **Dry-run by default.** Nothing is actually sent until the **live-send** switch is on. Thresholds,
   evaluation gates, storage backends, and notifications are all changed from Settings.
 
@@ -279,7 +279,6 @@ inbox (MCP email server | built-in demo)  ── src/email_source.py ──► I
 ```
 scripts/build_policy_pdf.py   renders the policy text into data/policy.pdf (one-time)
 data/                         ALL company-specific inputs (swap these for a new company)
-data/demo_inbox.json          offline demo inbox
 src/policy_ingest.py          PDF/DOCX/Markdown/txt → sections
 src/policy_store.py           hybrid BM25 + embeddings + RRF (BlobStore index cache)
 src/intent.py                 retrieval intent scoping from loaded policy categories
@@ -291,7 +290,7 @@ src/reliability.py            Tier-2 rates (Wilson CI) + calibration
 src/feedback.py               Review-action labels → feedback_events
 src/validate_metric.py        reliability report from feedback_events
 src/storage/                  pluggable StructuredStore + BlobStore (local default)
-src/email_source.py           pluggable inbox connector (demo | mcp)
+src/email_source.py           pluggable inbox connector (demo offline | mcp)
 src/email_parser.py           normalize a fetched email
 src/event_bus.py              ingestion queue via StructuredStore
 src/classifier.py             LLM categorization (7 categories)
@@ -303,7 +302,7 @@ pipeline.py                   batch CLI: --all | --generate | --evaluate | --val
 api.py                        FastAPI JSON wrapper over src/ (serves web/dist + SPA fallback)
 src/app_data.py               app-level data helpers (env, user examples) shared by api.py
 web/                          React + Vite frontend (Assistant · Inbox · Review · Settings · Evaluation)
-results/                      generated artifacts + local SQLite / index cache (gitignored DBs)
+results/                      local runtime only (gitignored; empty on a fresh clone)
 ```
 
 ## 8. Future implementation — from assistant to autonomous support layer
@@ -344,7 +343,7 @@ tools to online services.
 ### Roadmap
 
 **Status:** items 1–4 below are now **implemented** in this repo (see §6b) — an MCP email connector
-(plus an offline demo inbox) with a normalization + durable-queue front end, a cheap keyword
+(plus offline demo mode) with a normalization + durable-queue front end, a cheap keyword
 triage/noise gate as its own stage, confidence-gated routing with a dry-run auto-send switch, and a
 human-in-the-loop review dashboard with an email digest. Items 5–9 remain the forward path.
 Details of what shipped:

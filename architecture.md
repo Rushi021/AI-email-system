@@ -27,7 +27,7 @@ The UI is a React + Vite app (`web/`) over a thin FastAPI wrapper (`api.py`) aro
 ## Live pipeline (12 stages)
 
 ```
-email_source.fetch_unread (demo | mcp)
+email_source.fetch_unread (demo offline | mcp)
         │
         ▼
 email_parser.parse          # HTML / quotes / auth_status
