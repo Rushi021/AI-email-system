@@ -159,7 +159,7 @@
     <div class="path">
       <div class="k">Path A · live</div>
       <h3>Inbox → Review</h3>
-      <p>Fetch → parse → event bus → classify → generate → RAGAS → route → queue → human feedback. Entry: Streamlit Inbox / Review.</p>
+      <p>Fetch → parse → event bus → classify → generate → RAGAS → route → queue → human feedback. Entry: React UI Inbox / Review (FastAPI <code>/api/*</code>).</p>
     </div>
     <div class="path">
       <div class="k">Path B · batch</div>
@@ -475,7 +475,7 @@ flowchart LR
         <div class="stage-body">
           <p class="stage-tag">Tier 2 · human</p>
           <h3>Review actions → feedback <span class="badge store">persist</span></h3>
-          <p><code>views/review.py</code> + <code>src/feedback.py</code> — Send / edit /
+          <p><code>api.py</code> (Review page) + <code>src/feedback.py</code> — Send / edit /
             dismiss / flag hallucination / confirm escalation audit. On Send,
             <code>classify_send_label()</code> diffs the structured remedy: unchanged →
             <code>ACCEPTED_AS_IS</code>; remedy field change → <code>EDITED_MAJOR</code>;

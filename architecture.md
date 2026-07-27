@@ -14,11 +14,13 @@ Company-specific facts live only in `data/`. Code in `src/` is company-agnostic.
 
 ## Three entry paths
 
+The UI is a React + Vite app (`web/`) over a thin FastAPI wrapper (`api.py`) around `src/`.
+
 | Path | Entry | What runs |
 |---|---|---|
-| **Live** | Streamlit Inbox → Review | fetch → parse → event bus → classify → generate → RAGAS → route → queue → feedback |
+| **Live** | UI Inbox → Review (`/api/inbox/*`, `/api/queue/*`) | fetch → parse → event bus → classify → generate → RAGAS → route → queue → feedback |
 | **Batch** | `python pipeline.py --all` | holdout generate → RAGAS evaluate → reliability report (no classifier/router/queue) |
-| **Assist** | Streamlit Assistant | `generate_reply` only; optional on-demand RAGAS |
+| **Assist** | UI Assistant (`/api/assistant/*`) | `generate_reply` only; optional on-demand RAGAS |
 
 ---
 
@@ -154,6 +156,8 @@ Tables (local files under `results/`): `queue`, `event_bus`, `feedback_events`,
 | `src/reliability.py` | Rates + Wilson CIs + calibration |
 | `src/storage/` | Pluggable StructuredStore + BlobStore |
 | `pipeline.py` | Batch CLI |
-| `app.py` + `views/` | Streamlit UI |
+| `api.py` | FastAPI JSON wrapper over `src/`; serves `web/dist` + SPA fallback |
+| `src/app_data.py` | App-level data helpers (env, user examples) used by `api.py` |
+| `web/` | React + Vite frontend (Assistant · Inbox · Review · Settings · Evaluation) |
 
 Open [`architecture.html`](./architecture.html) for the full diagram and stage cards.

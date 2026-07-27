@@ -7,18 +7,25 @@ response quality (Tier 1) and human-feedback system reliability (Tier 2).
 
 ## ▶ How to run & access the app
 
+The UI is a **React + Vite** app (`web/`) served by a thin **FastAPI** backend
+(`api.py`) that wraps the pipeline in `src/`.
+
 ```bash
 # one-time setup (skip if .venv already exists)
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # then add your API key(s) — or do it later in the app's Settings page
 
-# start the app
-streamlit run app.py
+# --- single process (build once, serve build + API together) ---
+cd web && npm install && npm run build && cd ..
+uvicorn api:app --port 8000                 # open http://localhost:8000
+
+# --- development (two processes, hot reload) ---
+uvicorn api:app --reload --port 8000        # backend
+cd web && npm run dev                        # frontend → http://localhost:5173 (proxies /api)
 ```
 
-Streamlit prints a local URL — open **http://localhost:8501** in your browser.
-You land on the **✉️ Assistant** page; the left sidebar switches between the three pages:
+You land on the **✉️ Assistant** page; the left nav switches between the five pages:
 
 | Page | What you do there |
 |---|---|
@@ -87,8 +94,8 @@ Azure / GCS from Settings; secrets stay in `.env`.
 **Everything company-specific lives in `data/`. Nothing in `src/` names a company, a product,
 or a rule.** We simulate one fictional company — *NorthPeak Outdoor Gear*, an online outdoor
 retailer — but if you replaced `data/policy.pdf`, `data/transactions.json`, and
-`data/dataset.json` with another company's files, every line of `src/`, `pipeline.py`, and
-`app.py` would work unchanged:
+`data/dataset.json` with another company's files, every line of `src/`, `pipeline.py`,
+and `api.py` would work unchanged:
 
 - `src/policy_store.py` ingests **any** PDF/DOCX/Markdown/txt policy, extracts structured
   rules (id / condition / outcome / category / effective date), caches by section content-hash,
@@ -293,8 +300,9 @@ src/queue_store.py            review queue via StructuredStore
 src/notify.py                 email digest of pending items
 src/config.py                 non-secret runtime config (config.json)
 pipeline.py                   batch CLI: --all | --generate | --evaluate | --validate
-app.py                        Streamlit entrypoint
-views/                        Assistant · Inbox · Review · Settings · Evaluation
+api.py                        FastAPI JSON wrapper over src/ (serves web/dist + SPA fallback)
+src/app_data.py               app-level data helpers (env, user examples) shared by api.py
+web/                          React + Vite frontend (Assistant · Inbox · Review · Settings · Evaluation)
 results/                      generated artifacts + local SQLite / index cache (gitignored DBs)
 ```
 

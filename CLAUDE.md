@@ -16,7 +16,7 @@ We simulate one fictional company (NorthPeak Outdoor Gear) but the code is compa
 ## The one inviolable design rule
 
 **Everything company-specific lives in `data/`. Nothing in `src/`, `pipeline.py`,
-`app.py`, or `views/` may reference NorthPeak, a product, or a specific policy rule.** Swapping the
+`api.py`, or `web/` may reference NorthPeak, a product, or a specific policy rule.** Swapping the
 three data files (`policy.pdf`, `transactions.json`, `dataset.json`) for another company's
 must work with zero code changes. Never hardcode a rule ID, product name, or remedy in code
 or prompts — all company facts are injected at runtime from `data/`.
@@ -43,7 +43,8 @@ incoming email
               hard gate: faithfulness < gate OR disagreement OR scoring error → never AUTO
       ▼
    queue ──► Review dashboard ──► feedback_events ──► reliability
-pipeline.py = batch CLI · app.py + views/ = Streamlit UI
+pipeline.py = batch CLI
+UI: React + Vite (web/) over a thin FastAPI wrapper (api.py)
 src/storage/ = pluggable StructuredStore + BlobStore (default local)
 ```
 
@@ -74,7 +75,10 @@ src/storage/ = pluggable StructuredStore + BlobStore (default local)
 - `src/queue_store.py` — StructuredStore table `queue`.
 - `src/feedback.py` — append-only `feedback_events` from Review actions.
 - `src/notify.py` — digest of pending review+escalation.
-- Streamlit: Assistant · Inbox · Review · Settings · Evaluation.
+- `api.py` — FastAPI JSON wrapper over `src/` (company-agnostic; every fact still
+  read from `data/`). Serves the built `web/dist` + SPA fallback in one process.
+- `web/` — React + Vite frontend (JS). Pages: Assistant · Inbox · Review · Settings
+  · Evaluation, calling `/api/*`.
 
 ## Storage
 
@@ -112,8 +116,9 @@ goes through the storage layer.
 - Python venv at `.venv` (Python 3.12). Use `.venv/bin/python`.
 - `python pipeline.py --all` → generate → RAGAS evaluate → reliability report.
 - `--limit 1` = trial on one holdout ticket.
-- `streamlit run app.py` for the UI.
-- Optional cloud deps: `pip install -r requirements-storage.txt`.
+- React UI (dev): `.venv/bin/uvicorn api:app --reload --port 8000` + `cd web && npm run dev` (Vite proxies `/api` → :8000).
+- React UI (single process): `cd web && npm run build`, then `uvicorn api:app --port 8000` serves `web/dist` + the API at one origin.
+- Optional cloud deps: `pip install -r requirements-storage.txt`. Frontend deps: `cd web && npm install`.
 
 ## Dataset invariants (if you edit data/)
 
