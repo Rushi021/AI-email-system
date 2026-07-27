@@ -11,6 +11,8 @@ results/generated_replies.json
 results/evaluation_results.json
 results/validation_report.json
 data/demo_inbox.json
+CLAUDE.md
+.claude/
 __pycache__/
 *.pyc
 .venv/
