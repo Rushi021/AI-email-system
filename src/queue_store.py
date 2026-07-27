@@ -1,134 +1,92 @@
-"""SQLite-backed review/action queue. One row per routed email; the review
-dashboard reads it, the router writes it. stdlib sqlite3 only.
+"""Review/action queue. Public API unchanged; persistence via StructuredStore.
 
-# ponytail: single-file SQLite, no external DB until this goes multi-tenant.
+# ponytail: structured-store adapter keeps the same upsert/list/set_status surface.
 """
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
-DB_PATH = Path("results") / "queue.db"
+from src.storage.factory import get_structured_store
+
+TABLE = "queue"
 
 # decision -> base weight for priority ordering (higher surfaces first)
 DECISION_WEIGHT = {"escalate": 300.0, "review": 200.0, "auto": 100.0, "ignore": 0.0}
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS items (
-    email_id        TEXT PRIMARY KEY,
-    thread_id       TEXT,
-    from_addr       TEXT,
-    subject         TEXT,
-    body            TEXT,
-    order_id        TEXT,
-    category        TEXT,
-    decision        TEXT,          -- auto | review | escalate | ignore
-    status          TEXT,          -- pending | sent | simulated | dismissed
-    confidence      REAL,
-    priority        REAL,
-    suggested_reply TEXT,
-    judge           TEXT,          -- JSON blob of judge fields
-    flags           TEXT,          -- JSON list
-    created_at      TEXT,
-    updated_at      TEXT,
-    sent_at         TEXT
-);
-"""
-
-
-def _conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute(_SCHEMA)
-    return conn
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def upsert(item: dict, db_path: Path = DB_PATH) -> None:
+def _store():
+    return get_structured_store()
+
+
+def upsert(item: dict, db_path=None) -> None:
     """Insert a routed item, or refresh it if the same email_id is re-routed.
-    A human status (sent/simulated/dismissed) is preserved on re-route."""
+    A human status (sent/simulated/dismissed) is preserved on re-route.
+
+    db_path is accepted for backward-compat with self-checks but ignored —
+    persistence goes through the configured StructuredStore.
+    """
+    store = _store()
+    email_id = item["email_id"]
+    existing = store.get(TABLE, email_id)
+    status = item.get("status", "pending")
+    if existing and existing.get("status") not in (None, "pending"):
+        status = existing["status"]
+
     now = _now()
-    with _conn(db_path) as conn:
-        existing = conn.execute(
-            "SELECT status FROM items WHERE email_id = ?", (item["email_id"],)
-        ).fetchone()
-        status = item.get("status", "pending")
-        if existing and existing["status"] != "pending":
-            status = existing["status"]  # don't clobber a human decision
-        conn.execute(
-            """INSERT INTO items
-               (email_id, thread_id, from_addr, subject, body, order_id, category,
-                decision, status, confidence, priority, suggested_reply, judge, flags,
-                created_at, updated_at, sent_at)
-               VALUES (:email_id,:thread_id,:from_addr,:subject,:body,:order_id,:category,
-                :decision,:status,:confidence,:priority,:suggested_reply,:judge,:flags,
-                :created_at,:updated_at,NULL)
-               ON CONFLICT(email_id) DO UPDATE SET
-                 decision=excluded.decision, status=excluded.status,
-                 confidence=excluded.confidence, priority=excluded.priority,
-                 suggested_reply=excluded.suggested_reply, judge=excluded.judge,
-                 flags=excluded.flags, category=excluded.category,
-                 order_id=excluded.order_id, updated_at=excluded.updated_at""",
-            {
-                "email_id": item["email_id"],
-                "thread_id": item.get("thread_id", ""),
-                "from_addr": item.get("from_addr", ""),
-                "subject": item.get("subject", ""),
-                "body": item.get("body", ""),
-                "order_id": item.get("order_id", ""),
-                "category": item.get("category", ""),
-                "decision": item["decision"],
-                "status": status,
-                "confidence": item.get("confidence", 0.0),
-                "priority": item.get("priority", 0.0),
-                "suggested_reply": item.get("suggested_reply", ""),
-                "judge": json.dumps(item.get("judge", {})),
-                "flags": json.dumps(item.get("flags", [])),
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
-
-
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    d = dict(row)
-    d["judge"] = json.loads(d["judge"]) if d["judge"] else {}
-    d["flags"] = json.loads(d["flags"]) if d["flags"] else []
-    return d
+    record = {
+        "id": email_id,
+        "email_id": email_id,
+        "thread_id": item.get("thread_id", ""),
+        "from_addr": item.get("from_addr", ""),
+        "subject": item.get("subject", ""),
+        "body": item.get("body", ""),
+        "order_id": item.get("order_id", ""),
+        "category": item.get("category", ""),
+        "decision": item["decision"],
+        "status": status,
+        "confidence": item.get("confidence", 0.0),
+        "priority": item.get("priority", 0.0),
+        "suggested_reply": item.get("suggested_reply", ""),
+        "judge": item.get("judge", {}),
+        "flags": item.get("flags", []),
+        "response_id": item.get("response_id", ""),
+        "original_reply": item.get("original_reply", item.get("suggested_reply", "")),
+        "remedy": item.get("remedy", {}),
+        "ragas": item.get("ragas", {}),
+        "retrieved_rule_ids": item.get("retrieved_rule_ids", []),
+        "cited_rule_ids": item.get("cited_rule_ids", []),
+        "audit_sample": item.get("audit_sample", False),
+        "created_at": (existing or {}).get("created_at") or now,
+        "updated_at": now,
+        "sent_at": (existing or {}).get("sent_at"),
+    }
+    store.insert(TABLE, record)
 
 
 def list_items(
     decision: str | None = None,
     status: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path=None,
 ) -> list[dict]:
     """Items, highest priority first. Optional decision/status filters."""
-    clauses, params = [], []
+    filters = {}
     if decision:
-        clauses.append("decision = ?")
-        params.append(decision)
+        filters["decision"] = decision
     if status:
-        clauses.append("status = ?")
-        params.append(status)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    with _conn(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT * FROM items {where} ORDER BY priority DESC, created_at ASC", params
-        ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+        filters["status"] = status
+    items = _store().query(TABLE, filters=filters or None, order_by="-priority")
+    # Stable secondary sort by created_at ascending within same priority.
+    items.sort(key=lambda i: (-float(i.get("priority") or 0), i.get("created_at") or ""))
+    return items
 
 
-def get(email_id: str, db_path: Path = DB_PATH) -> dict | None:
-    with _conn(db_path) as conn:
-        row = conn.execute("SELECT * FROM items WHERE email_id = ?", (email_id,)).fetchone()
-    return _row_to_dict(row) if row else None
+def get(email_id: str, db_path=None) -> dict | None:
+    return _store().get(TABLE, email_id)
 
 
 def set_status(
@@ -136,60 +94,65 @@ def set_status(
     status: str,
     *,
     suggested_reply: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path=None,
 ) -> None:
     now = _now()
-    sent_at = now if status in ("sent", "simulated") else None
-    with _conn(db_path) as conn:
-        if suggested_reply is not None:
-            conn.execute(
-                "UPDATE items SET status=?, suggested_reply=?, updated_at=?, sent_at=? WHERE email_id=?",
-                (status, suggested_reply, now, sent_at, email_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE items SET status=?, updated_at=?, sent_at=? WHERE email_id=?",
-                (status, now, sent_at, email_id),
-            )
+    patch: dict = {"status": status, "updated_at": now}
+    if status in ("sent", "simulated"):
+        patch["sent_at"] = now
+    if suggested_reply is not None:
+        patch["suggested_reply"] = suggested_reply
+    _store().update(TABLE, email_id, patch)
 
 
-def counts(db_path: Path = DB_PATH) -> dict:
+def counts(db_path=None) -> dict:
     """Pending counts per decision, plus total pending — for dashboard badges."""
-    with _conn(db_path) as conn:
-        rows = conn.execute(
-            "SELECT decision, COUNT(*) n FROM items WHERE status='pending' GROUP BY decision"
-        ).fetchall()
-    by = {r["decision"]: r["n"] for r in rows}
+    store = _store()
+    by = {}
+    for decision in ("escalate", "review", "auto"):
+        by[decision] = store.count(TABLE, {"decision": decision, "status": "pending"})
     return {
-        "escalate": by.get("escalate", 0),
-        "review": by.get("review", 0),
-        "auto": by.get("auto", 0),
-        "pending_total": sum(by.get(d, 0) for d in ("escalate", "review", "auto")),
+        "escalate": by["escalate"],
+        "review": by["review"],
+        "auto": by["auto"],
+        "pending_total": by["escalate"] + by["review"] + by["auto"],
     }
 
 
 def _demo() -> None:
-    """Offline self-check: insert, ordered listing, dedupe, status update."""
+    """Offline self-check against an isolated local store root."""
     import tempfile
+    from pathlib import Path
+
+    from src.storage.factory import clear_store_cache
+    from src.storage.local import LocalSQLiteStore
+    import src.queue_store as qs
 
     with tempfile.TemporaryDirectory() as tmp:
-        db = Path(tmp) / "q.db"
-        upsert({"email_id": "e1", "decision": "review", "priority": 200.0}, db)
-        upsert({"email_id": "e2", "decision": "escalate", "priority": 300.0}, db)
-        upsert({"email_id": "e3", "decision": "auto", "priority": 100.0}, db)
+        clear_store_cache()
+        # Patch module store to use temp root.
+        tmp_store = LocalSQLiteStore(root=tmp)
+        original = qs._store
+        qs._store = lambda: tmp_store
+        try:
+            upsert({"email_id": "e1", "decision": "review", "priority": 200.0})
+            upsert({"email_id": "e2", "decision": "escalate", "priority": 300.0})
+            upsert({"email_id": "e3", "decision": "auto", "priority": 100.0})
 
-        items = list_items(db_path=db)
-        assert [i["email_id"] for i in items] == ["e2", "e1", "e3"], "priority ordering"
-        assert counts(db)["pending_total"] == 3
-        assert len(list_items(decision="escalate", db_path=db)) == 1
+            items = list_items()
+            assert [i["email_id"] for i in items] == ["e2", "e1", "e3"], "priority ordering"
+            assert counts()["pending_total"] == 3
+            assert len(list_items(decision="escalate")) == 1
 
-        set_status("e2", "sent", db_path=db)
-        assert get("e2", db)["status"] == "sent"
-        assert counts(db)["escalate"] == 0, "sent item drops out of pending"
+            set_status("e2", "sent")
+            assert get("e2")["status"] == "sent"
+            assert counts()["escalate"] == 0, "sent item drops out of pending"
 
-        # re-routing e2 must NOT clobber the human 'sent' status
-        upsert({"email_id": "e2", "decision": "escalate", "priority": 300.0}, db)
-        assert get("e2", db)["status"] == "sent", "human status preserved on re-route"
+            upsert({"email_id": "e2", "decision": "escalate", "priority": 300.0})
+            assert get("e2")["status"] == "sent", "human status preserved on re-route"
+        finally:
+            qs._store = original
+            clear_store_cache()
     print("queue_store self-check OK")
 
 

@@ -34,6 +34,7 @@ DEFAULT_MODELS = {
 }
 
 _last_mistral_call = 0.0
+_client_cache: dict[str, object] = {}
 
 
 def resolve_provider_model(purpose: str = "generate") -> tuple[str, str]:
@@ -43,8 +44,6 @@ def resolve_provider_model(purpose: str = "generate") -> tuple[str, str]:
         if os.getenv("CLASSIFY_LLM_MODEL"):
             model = os.environ["CLASSIFY_LLM_MODEL"]
         elif os.getenv("CLASSIFY_LLM_PROVIDER"):
-            # Different provider chosen for classify — use that provider's default,
-            # not a generate-model that may belong to another vendor.
             model = DEFAULT_MODELS.get(provider, "")
         else:
             model = os.getenv("LLM_MODEL") or DEFAULT_MODELS.get(provider, "")
@@ -55,6 +54,39 @@ def resolve_provider_model(purpose: str = "generate") -> tuple[str, str]:
     return provider, model
 
 
+def get_sdk_client(provider: str | None = None, *, async_client: bool = False):
+    """Reusable provider SDK client for RAGAS llm_factory and complete()."""
+    provider = (provider or resolve_provider_model("generate")[0]).lower()
+    cache_key = f"{provider}:{'async' if async_client else 'sync'}"
+    if cache_key in _client_cache:
+        return _client_cache[cache_key]
+
+    if provider == "anthropic":
+        import anthropic
+
+        client = anthropic.AsyncAnthropic() if async_client else anthropic.Anthropic()
+    elif provider == "openai":
+        from openai import AsyncOpenAI, OpenAI
+
+        client = AsyncOpenAI() if async_client else OpenAI()
+    elif provider == "mistral":
+        from openai import AsyncOpenAI, OpenAI
+
+        kwargs = {
+            "base_url": "https://api.mistral.ai/v1",
+            "api_key": os.environ["MISTRAL_API_KEY"],
+            "max_retries": 8,
+        }
+        client = AsyncOpenAI(**kwargs) if async_client else OpenAI(**kwargs)
+    elif provider == "mock":
+        client = None
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
+
+    _client_cache[cache_key] = client
+    return client
+
+
 def complete(
     system: str,
     user: str,
@@ -62,18 +94,11 @@ def complete(
     *,
     purpose: str = "generate",
 ) -> str:
-    """One-shot completion. Same signature for every provider.
-
-    purpose="generate" (default) uses LLM_PROVIDER / LLM_MODEL.
-    purpose="classify" uses CLASSIFY_LLM_PROVIDER / CLASSIFY_LLM_MODEL
-    (falling back to the generate pair when unset).
-    """
+    """One-shot completion. Same signature for every provider."""
     provider, model = resolve_provider_model(purpose)
 
     if provider == "anthropic":
-        import anthropic
-
-        client = anthropic.Anthropic()
+        client = get_sdk_client("anthropic")
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -83,24 +108,13 @@ def complete(
         return "".join(b.text for b in response.content if b.type == "text")
 
     if provider in ("openai", "mistral"):
-        from openai import OpenAI
-
         if provider == "mistral":
-            # Mistral's API is OpenAI-compatible; free tier is rate-limited to
-            # ~1 request/second, so throttle and retry generously.
             global _last_mistral_call
             wait = 1.1 - (time.monotonic() - _last_mistral_call)
             if wait > 0:
                 time.sleep(wait)
             _last_mistral_call = time.monotonic()
-            client = OpenAI(
-                base_url="https://api.mistral.ai/v1",
-                api_key=os.environ["MISTRAL_API_KEY"],
-                max_retries=8,
-            )
-        else:
-            client = OpenAI()
-
+        client = get_sdk_client(provider)
         response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
@@ -143,6 +157,33 @@ def _mock_complete(system: str, user: str) -> str:
     """Deterministic stub for offline plumbing tests only."""
     seed = int(hashlib.sha256(user.encode()).hexdigest(), 16)
     sys_l = system.lower()
+    # Intent extraction — pick a category from the listed ones.
+    if "retrieval intent" in sys_l or "coarse retrieval intent" in sys_l:
+        low = user.lower()
+        cat = "global"
+        if any(h in low for h in ("return", "refund")):
+            cat = "returns"
+        elif any(h in low for h in ("ship", "package", "delivery", "damaged", "lost")):
+            cat = "shipping"
+        elif "cancel" in low:
+            cat = "cancellation"
+        elif any(h in low for h in ("warranty", "defect", "broken")):
+            cat = "warranty"
+        elif any(h in low for h in ("charge", "billing", "invoice", "duplicate")):
+            cat = "billing"
+        return json.dumps({"category": cat, "region": "", "as_of": "", "entities": {}})
+    # Policy segment / normalize helpers
+    if "split an unstructured" in sys_l:
+        return json.dumps({"sections": [{"heading": "R0 Mock", "body": "Mock body MUST apply."}]})
+    if "normalize one policy section" in sys_l:
+        return json.dumps({
+            "id": "R0",
+            "condition": "mock condition",
+            "outcome": "MUST apply mock remedy",
+            "category": "global",
+            "region": "",
+            "effective_date": "",
+        })
     # Classifier prompt — return a category JSON so routing self-checks work offline.
     if "categor" in sys_l and "refund" in sys_l:
         low = user.lower()
@@ -163,28 +204,49 @@ def _mock_complete(system: str, user: str) -> str:
         else:
             cat = "general_inquiry"
         return json.dumps({"category": cat})
-    if "JSON" in system or "json" in system:
-        score = 2 + seed % 4  # 2-5, deterministic per input
+    # Generator — JSON with reply + cited_rules + remedy
+    if "drafting a reply" in sys_l or "cited_rules" in sys_l:
+        m = re.search(r"\b(R\d+(?:\.\d+)?)\b", user)
+        rid = m.group(1) if m else "R0"
+        oid_m = re.search(r'"order_id":\s*"([^"]*)"', user)
+        oid = oid_m.group(1) if oid_m else "ORDER"
+        reply = (
+            f"Hi, thanks for reaching out about your order {oid}. Based on our policy "
+            f"(per {rid}) I've reviewed your request and here is the outcome, along with "
+            "the next steps we will take to resolve it. (mock reply generated offline "
+            "without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real "
+            "output)"
+        )
         return json.dumps({
-            "policy_requires": "mock remedy derived offline",
-            "rule": "R0",
-            "reply_offers": "mock reply summary",
-            "match_score": score,
-            "justification": "mock judge output (no API key configured)",
-            "alignment": score,
-            "alignment_justification": "mock",
-            "groundedness": score,
-            "tone_empathy": score,
-            "clarity": score,
-            "actionability": score,
-            "quality_justification": "mock",
-            "escalate": False,
-            "escalate_reason": "",
+            "reply": reply,
+            "cited_rules": [rid],
+            "remedy": {
+                "remedy_type": "refund",
+                "remedy_amount": None,
+                "rule_cited": rid,
+                "escalate": False,
+            },
         })
+    # Remedy extraction / full-policy rule selection
+    if "extract the structured remedy" in sys_l:
+        m = re.search(r"\b(R\d+(?:\.\d+)?)\b", user)
+        rid = m.group(1) if m else ""
+        return json.dumps({
+            "remedy_type": "refund",
+            "remedy_amount": None,
+            "rule_cited": rid,
+            "escalate": False,
+        })
+    if "select the single governing policy rule" in sys_l:
+        m = re.search(r"\b(R\d+(?:\.\d+)?)\b", user)
+        rid = m.group(1) if m else "R0"
+        return json.dumps({"rule": rid, "escalate": False})
+    if "JSON" in system or "json" in system:
+        return json.dumps({"rule": "R0", "escalate": False})
     return (
         "Hi, thanks for reaching out about your order. Based on our policy I've "
         "reviewed your request and here is the outcome, along with the next steps "
         "we will take to resolve it. (mock reply generated offline without an API "
         "key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output) "
-        "— NorthPeak Support"
+        "— Support"
     )

@@ -2,8 +2,8 @@
 
 A complete, runnable system that suggests customer-support email replies grounded in a
 company's **own data** — its policy document, its transaction records, and the replies its
-agents actually sent — and, most importantly, **measures how accurate those suggestions are**
-with a validated, three-layer accuracy system.
+agents actually sent — and measures accuracy with **two unblended scores**: automated RAGAS
+response quality (Tier 1) and human-feedback system reliability (Tier 2).
 
 ## ▶ How to run & access the app
 
@@ -22,26 +22,33 @@ You land on the **✉️ Assistant** page; the left sidebar switches between the
 
 | Page | What you do there |
 |---|---|
-| **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. The order ID is auto-detected from the email; the reply appears in a copy-ready block. Expand **"How accurate is this reply?"** to score it against the policy (runs 2 extra LLM calls, only on demand). |
+| **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. Expand **"How accurate is this reply?"** for on-demand RAGAS scoring (faithfulness / relevancy / context precision). |
 | **📥 Inbox** | **Sync inbox** to fetch unread mail from the connected source (an MCP email server, or the built-in demo inbox) and route every message through the pipeline; or paste a single email to route it. Each email is classified **auto-reply / needs-review / escalate / ignore** and dropped into the queue. |
-| **🗂️ Review** | The human-action dashboard: a priority-sorted queue split into Escalations · Needs review · Auto · Done. Edit the suggested reply, **Send** (or **Simulate send** in dry-run), or dismiss. The sidebar shows a live pending-count badge. |
-| **⚙️ Settings** | Upload a new policy PDF (takes effect immediately); pick the LLM provider + key; **connect an email source** (demo or an MCP server URL + token); set **automation thresholds** (T1/T2) and the **live-send** switch; configure the **email digest**. |
-| **📊 Evaluation (internal)** | Batch results + metric-validation dashboards for the challenge submission (populate with `python pipeline.py --all`). |
+| **🗂️ Review** | The human-action dashboard: Escalations · Needs review · Auto · Audit sample · Done. Send/edit/dismiss, flag hallucinations, and confirm escalation audits — every action writes a `feedback_events` row. |
+| **⚙️ Settings** | Upload a policy document; manage example replies; LLM providers; email connector; automation thresholds; **evaluation gates** (faithfulness gate, disagreement/audit sample rates); **storage** (local / Postgres / S3 / Azure / GCS). |
+| **📊 Evaluation** | Two unblended panels: Response Quality (RAGAS) and System Reliability (human feedback with n + Wilson CIs). |
 
 No API key yet? The app still opens — configure a provider on the Settings page first,
 then use the Assistant.
 
 ```
-incoming email ──► TF-IDF retrieve policy clauses (data/policy.pdf)
-      │       ──► TF-IDF retrieve similar past tickets (data/dataset.json corpus split)
+incoming email ──► format-aware policy ingest + hybrid retrieve (BM25 + embeddings + RRF)
+      │       ──► TF-IDF retrieve similar past tickets (dataset corpus + user_examples)
       │       ──► transaction record lookup (data/transactions.json)
       ▼
-   LLM generator ──► suggested reply
+   LLM generator ──► suggested reply + cited rules + structured remedy
       ▼
-   3-layer evaluator ──► policy-compliance judge (45%) + alignment judge (25%)
-                         + quality rubric (30%) − deterministic penalties
+   RAGAS evaluator ──► faithfulness · answer relevancy · context precision
+                       + dual-pass retrieval disagreement (sampled)
+                       + deterministic diagnostics (non-blended)
       ▼
-   metric validation ──► control gap · semantic-vs-lexical correlation · judge trust check
+   router ──► AUTO / REVIEW / ESCALATE / IGNORE
+              (hard gate: faithfulness < gate OR disagreement → never AUTO)
+      ▼
+   Review dashboard ──► human feedback_events
+      ▼
+   reliability ──► critical_error_rate · reliability_rate · calibration
+                   (every rate carries n + Wilson CI)
 ```
 
 ## 1. Quick start (batch pipeline)
@@ -49,22 +56,22 @@ incoming email ──► TF-IDF retrieve policy clauses (data/policy.pdf)
 Setup is the same as "How to run & access the app" above; then:
 
 ```bash
-python pipeline.py --all      # generate → evaluate → validate; writes results/*.json
-python pipeline.py --all --limit 1   # frugal trial: exactly 5 LLM calls
+python pipeline.py --all      # generate → RAGAS evaluate → reliability report
+python pipeline.py --all --limit 1   # frugal trial on one holdout ticket
 ```
 
 `LLM_PROVIDER=anthropic|openai|mistral` selects the provider for **email generation**
-(and evaluation judges). `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` select the model
+(and RAGAS judges). `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` select the model
 used only for **email categorization** (falls back to `LLM_*` when unset). Both go through
-one interface in `src/llm_client.py`; Mistral uses its OpenAI-compatible endpoint with
-free-tier rate-limit throttling. `LLM_MODEL` optionally overrides the generation model.
-Configure both steps in Settings.
-Dataset dates are anchored around 2026-07-07; set `EVAL_TODAY=2026-07-07` if you run the
-evaluation much later, so date-window rules (30/90-day returns, 1-year warranty) still
-resolve the way the labels assume.
+one interface in `src/llm_client.py`. RAGAS uses native `llm_factory` for all three providers
+and `embedding_factory("huggingface", ...)` for local sentence-transformers embeddings
+(hash-embedding shim only for offline mock).
 
 *(A third provider value, `mock`, exists purely to smoke-test the plumbing offline with a
 deterministic stub — its scores are meaningless and it is not part of the submission flow.)*
+
+Storage defaults to local SQLite + filesystem (`src/storage/`). Opt into Postgres / S3 /
+Azure / GCS from Settings; secrets stay in `.env`.
 
 ## 2. The core design principle: company-agnostic code
 
@@ -74,13 +81,16 @@ retailer — but if you replaced `data/policy.pdf`, `data/transactions.json`, an
 `data/dataset.json` with another company's files, every line of `src/`, `pipeline.py`, and
 `app.py` would work unchanged:
 
-- `src/policy_store.py` ingests **any** PDF, chunks it on numbered-rule headings (with a
-  paragraph fallback for unstructured documents), and serves TF-IDF retrieval over it.
-- `src/retriever.py` fits TF-IDF over whatever ticket corpus it is given.
+- `src/policy_store.py` ingests **any** PDF/DOCX/Markdown/txt policy, extracts structured
+  rules (id / condition / outcome / category / effective date), caches by section content-hash,
+  and serves hybrid BM25 + local embedding retrieval with RRF (optional cross-encoder rerank).
+- `src/retriever.py` fits TF-IDF over whatever ticket corpus it is given (eval `dataset.json`
+  corpus split plus optional production `user_examples.json` in the live UI).
 - `src/schema.py` uses a generic transaction shape (`extra="allow"`, so extra columns from a
   different company's export ride along without code changes).
 - Every prompt in `src/prompts.py` injects policy text, transaction data and past replies at
-  runtime; none contains a company fact.
+  runtime; none contains a company fact. Past tickets teach **voice/tone only** and must never
+  override policy.
 
 That is the point of the design: this is a *product*, not a demo hard-coded to one dataset.
 
@@ -119,25 +129,20 @@ Why representative: returns, shipping problems, cancellations, warranty claims a
 disputes are the canonical intent taxonomy of e-commerce support; the categories, the
 policy-conditioned outcomes and the emotional range mirror what a real inbox contains, and
 because every ticket is grounded in a transaction record, the "correct" answer is *decidable*
-— which is exactly what a real accuracy measurement needs.
+from the policy + transaction alone — which is what Tier-1 RAGAS faithfulness checks against
+retrieved context, and what human reviewers later confirm or correct in Tier-2 feedback.
 
-Two supporting files complete the evaluation harness:
-
-- **`data/control_examples.json`** — 3 deliberately bad replies (a generic non-answer, a
-  final-sale refund that contradicts policy, a confident auto-approval that ignores the R7
-  escalation trigger) used to prove the metric can tell bad from good.
-- **`data/expected_outcomes.json`** — hand-labeled ground truth (correct remedy + rule) for
-  the 6 holdout tickets, written by reading `policy.pdf` and `transactions.json` as the
-  dataset author. **This file is used only by `src/validate_metric.py`** — never by the
-  generator and never by the per-response evaluator — so there is no leakage: it exists to
-  audit the judge, not to help the system.
+**No hand-labeled answer key and no synthetic control replies.** Accuracy trust comes from
+organic Review-dashboard feedback (`feedback_events`) plus reference-free RAGAS metrics.
 
 ## 4. Generation approach — RAG over policy + past tickets, and why
 
 For each incoming email the generator (`src/generator.py`) retrieves the top policy clauses
 and the top similar past tickets, and prompts the LLM with both plus the transaction record.
 The prompt is explicit about the hierarchy: **policy determines the remedy; past tickets
-teach only voice and structure; escalation rules are checked first.**
+teach only voice and structure; escalation rules are checked first.** The model also emits a
+structured remedy object (`remedy_type`, `remedy_amount`, `rule_cited`, `escalate`) used later
+for deterministic edit classification — not for LLM-judged scoring.
 
 Why this combination beats the alternatives:
 
@@ -147,74 +152,69 @@ Why this combination beats the alternatives:
   can't answer scenarios with no precedent (our holdout deliberately contains one).
   Retrieval also drifts: a similar-sounding email can have the opposite correct outcome
   (in-window vs final-sale return look nearly identical textually).
-- **Combining both** is robust to each one's failure mode — and the evaluator's compliance
-  judge closes the loop by checking the output against the policy document itself.
+- **Combining both** is robust to each one's failure mode — and RAGAS faithfulness closes the
+  loop by checking claims against the *retrieved* policy chunks.
 - **vs fine-tuning:** fine-tuning bakes today's policy into weights. Real policies version
   (ours is stamped v3.1); real ticket corpora grow daily. With RAG, updating the system is
   *replacing a file*. Fine-tuning also needs orders of magnitude more data than any single
   team's corpus, costs money per iteration, and can't cite the rule it applied.
 - **vs zero-shot:** ignores the owned data entirely — no grounding in the actual policy, no
   house voice, and (as the task requires) no use of the dataset at all.
-- **Retrieval choice:** TF-IDF cosine (scikit-learn) rather than embeddings — free, instant,
-  fully offline, zero extra API dependency, and at this corpus scale (tens to thousands of
-  tickets) it retrieves the same neighbors an embedding index would. Swapping in embeddings
-  later is a one-class change behind the same `retrieve()`/`top_k()` interface.
+- **Retrieval choice:** hybrid BM25 + local `sentence-transformers` embeddings, fused with
+  Reciprocal Rank Fusion, after intent-based category scoping (plus always-on `global`
+  escalation rules). Optional cross-encoder rerank is off by default. Section content-hashes
+  make re-uploads reprocess only changed sections (`results/policy_index/` via BlobStore).
+  Ticket retrieval remains TF-IDF over the corpus (and Settings-managed `user_examples`).
 
-## 5. The accuracy system — what "accurate" means and why this metric
+## 5. Accuracy — two numbers, never blended
 
-**Exact match fails immediately:** two replies can share almost no words and both be perfect,
-or share 90% of their words while one grants a refund the policy forbids. So we define
-accuracy as three separately measured questions:
+### Tier 1 — RAGAS Response Quality (automated, zero setup)
 
-| Layer | Question | Weight | How |
-|---|---|---|---|
-| **A. Policy compliance** | Does the reply offer the remedy the policy actually requires? | 45% | LLM judge is given the retrieved policy clauses + transaction + reply. It must state (1) what the policy requires and which rule, (2) what the reply offers, (3) a 1–5 match score, (4) justification. It derives the correct remedy **itself from the document** — it is never shown the hand labels. |
-| **B. Alignment with actual reply** | Does it convey the same resolution and key information as the reply a human actually sent, in meaning, regardless of wording? | 25% | LLM judge, 1–5. |
-| **C. Quality rubric** | Is it a *good email*? | 30% | LLM rubric, 1–5 each: groundedness (25%), tone/empathy vs the customer's sentiment (25%), clarity (20%), actionability (30%). |
-| **D. Deterministic checks** | Cheap failure modes | penalty only | No LLM: placeholder tokens (−8), length outside 40–250 words (−4), unqualified absolute claims not present in the policy text (−8), order ID never referenced (−4). Capped at −20. |
-| **E. Lexical overlap** | Independent cross-check | reported, never blended | `difflib.SequenceMatcher` ratio vs the actual reply. |
+| Metric | What it catches |
+|---|---|
+| **Faithfulness** | Unsupported claims vs retrieved policy chunks (hallucinations) |
+| **Answer relevancy** | On-topic-sounding but non-responsive drafts |
+| **Context precision** | Retrieved chunks that were not actually useful (retriever quality) |
+
+Scores are stored individually in the `ragas_scores` table. For routing only:
 
 ```
-final_score = max(0, 0.45·policy + 0.25·alignment + 0.30·quality − penalty)   # each on 0–100
+quality_score = 0.5·faithfulness + 0.3·answer_relevancy + 0.2·context_precision   # 0–1
 ```
 
-Policy compliance carries the largest weight because it is the only layer judged against a
-**document, not vibes** — and because the most expensive support failure is a confidently
-wrong remedy (refunding a final-sale item, skipping a mandated escalation). Alignment is
-weighted below compliance on purpose: the historical agent is a strong reference but not an
-oracle. Every sub-score, judge justification, flag and the lexical ratio is stored per
-response (`results/evaluation_results.json`) — nothing is a single opaque number.
+**Hard AUTO gate:** `faithfulness < FAITHFULNESS_GATE` (default 0.7) **or**
+`retrieval_disagreement == true` **or** scoring failure → never AUTO.
+Disagreement is a sampled dual-pass check (top-k cited rule vs full-document rule extraction)
+— no hand labels required. Deterministic length/placeholder/absolute-claim checks remain as
+non-blended diagnostic flags.
 
-## 6. Validating the metric — the part that makes the number trustworthy
+### Tier 2 — System Reliability (human feedback only)
 
-A metric you haven't validated is just a number. `src/validate_metric.py` runs three checks
-(saved to `results/validation_report.json`, visualized in the app):
+Review actions produce mutually exclusive labels: `ACCEPTED_AS_IS`, `EDITED_MINOR`,
+`EDITED_MAJOR`, `REJECTED`, `ESCALATED_CORRECTLY`, `ESCALATED_MISSED`,
+`FLAGGED_HALLUCINATION`. Minor vs major edits are classified by structured remedy diff
+(not another LLM judgment).
 
-1. **Discriminative check.** Three deliberately bad control replies (wrong remedy, generic
-   non-answer, ignored escalation) are scored by the same evaluator as the generated replies.
-   If the metric is real, the control average must sit far below the generated average. A
-   metric that can't fail a reply that refunds a final-sale item measures nothing.
-2. **Correlation check.** Pearson correlation between the LLM alignment score and the
-   lexical-overlap ratio across all scored replies. We *expect* moderate positive correlation
-   (same meaning often shares words) — but the interesting evidence is the **divergent
-   cases** the report lists: low word overlap with high alignment means the judge correctly
-   rewarded a paraphrase that exact/lexical matching would have failed. That is precisely the
-   failure of exact-match this metric exists to fix.
-3. **Compliance-judge trust check — the strongest of the three.** The compliance judge's own
-   stated reading of the policy ("this case requires X, per rule R") is compared, for all
-   6 holdout + 3 control evaluations, against the hand-labeled ground truth in
-   `data/expected_outcomes.json` — a file the judge has never seen. This is the right order
-   of operations: **before trusting the judge's compliance scores on generated replies, we
-   verify the judge reads the policy correctly on cases where a human established the
-   answer.** Checks 1 and 2 show the blended score *behaves* sensibly; check 3 grounds the
-   heaviest-weighted component in human-verified truth. It reports an agreement rate (e.g.
-   8/9 = 89%) plus the full per-ticket comparison table, so a disagreement is inspectable,
-   not hidden in an average. (The comparison is on the cited rule ID — deterministic, no
-   second LLM grading the first one.)
+**Critical error rate** (business headline) uses only human-labeled AUTO responses as the
+denominator — unaudited AUTO is excluded and audit coverage is reported separately:
 
-Run `python pipeline.py --all` with a real API key and the three headline numbers (control
-gap, correlation coefficient, judge agreement rate) print in the summary and populate the
-app's Metric Validation tab.
+```
+critical_error_rate =
+  count(label ∈ {EDITED_MAJOR, REJECTED, ESCALATED_MISSED, FLAGGED_HALLUCINATION}
+        ∧ routing_decision == AUTO ∧ labeled)
+  / count(routing_decision == AUTO ∧ labeled)
+```
+
+Every rate carries `n` and a Wilson 95% CI; slices with `n < 20` render as insufficient data.
+Calibration buckets RAGAS `quality_score` deciles against real acceptance — if a high-score
+bucket has high critical-error rate, tighten the faithfulness gate.
+
+## 6. Validating trustworthiness
+
+`src/validate_metric.py` / the Evaluation dashboard report reliability from organic
+`feedback_events` — not from synthetic controls or hand-labeled answer keys. A brand-new
+customer with only a policy PDF gets full Tier-1 scoring on response one. The number an
+owner sees first (`critical_error_rate`) is computed exclusively from actions humans took.
 
 ## 6b. The automation layer — inbox → route → review
 
@@ -382,11 +382,11 @@ Details of what shipped:
    changes from "did the reply offer the required remedy?" to "is every stated fact
    present in the operational document?" — same structure, same validation method.
 
-6. **Retrieval upgrade.** TF-IDF → hybrid retrieval (BM25 + embeddings in pgvector),
-   cross-encoder re-ranking, and a **versioned multi-document policy store** with
-   effective dates — so "which policy was in force when this order shipped?" has a
-   correct answer, and a policy update triggers automatic re-evaluation of the golden set
-   (catching rules the new document silently changed).
+6. **Multi-document / versioned policy store.** Hybrid BM25 + embeddings + RRF (with
+   section-hash incremental reindexing) is already in place. Next: a **versioned
+   multi-document** store with effective dates — so "which policy was in force when this
+   order shipped?" has a correct answer, and a policy update triggers automatic
+   re-evaluation of the golden set (catching rules the new document silently changed).
 
 7. **Continuous learning & drift detection.** Agent edits become preference pairs for
    the generator; accept/reject decisions continuously re-validate the judge

@@ -25,6 +25,28 @@ DEFAULTS: dict = {
     "mcp_tool_search": "",
     "mcp_tool_get": "",
     "mcp_tool_send": "",
+    # Policy retrieval (non-secret). Company document path is under data/.
+    "policy_filename": "policy.pdf",
+    "use_embeddings": True,
+    "use_bm25": True,
+    "rrf_k": 60,
+    "cross_encoder_rerank": False,
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "cross_encoder_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "policy_llm_chunking": False,  # LLM fallback for unstructured sections
+    "k_policy": 4,
+    # Evaluation v2 — RAGAS gates + human-feedback sampling (non-secret).
+    "faithfulness_gate": 0.7,
+    "retrieval_disagreement_sample_rate": 0.1,  # 1-in-10 dual-pass checks
+    "audit_sample_rate": 0.05,  # fraction of AUTO responses sampled for escalation audit
+    # Storage providers (secrets stay in .env).
+    "storage_structured_provider": "local",  # local | postgres
+    "storage_blob_provider": "local",  # local | s3 | azure | gcs | postgres
+    "storage_s3_bucket": "",
+    "storage_s3_endpoint_url": "",
+    "storage_s3_region": "",
+    "storage_azure_container": "app-data",
+    "storage_gcs_bucket": "",
 }
 
 

@@ -4,7 +4,7 @@ specific company's policy."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -22,9 +22,8 @@ class Transaction(BaseModel):
     price: float
     order_date: str
     delivery_date: Optional[str] = None
-    # promised_delivery_date makes shipping-delay rules verifiable from data alone
     promised_delivery_date: Optional[str] = None
-    status: str  # e.g. delivered, in_transit, lost_carrier_confirmed, processing...
+    status: str
     final_sale: bool = False
     returns_last_90_days: int = 0
 
@@ -37,33 +36,102 @@ class Ticket(BaseModel):
     order_id: str
     category: str
     split: str  # "corpus" (retrieval pool) or "holdout" (test set)
-    sentiment: str = "neutral"  # frustrated / neutral / polite ...
+    sentiment: str = "neutral"
     incoming_email: str
     actual_reply: str
 
 
 class IncomingEmail(BaseModel):
-    """A live inbound email fetched from a connected inbox (or the demo inbox).
-    Generic mail fields only — no company or provider specifics."""
+    """A live inbound email fetched from a connected inbox (or the demo inbox)."""
 
-    id: str  # provider message id (unique; used to dedupe the queue)
+    id: str
     thread_id: str = ""
     from_addr: str = ""
     subject: str = ""
     body: str = ""
     received_at: str = ""
-    # populated by src.email_parser.parse(); absent/default before that step runs
     raw_headers: dict = Field(default_factory=dict)
     auth_status: str = "unavailable"  # pass | fail | unavailable
     auth_detail: str = ""
     parse_flags: list[str] = Field(default_factory=list)
 
 
+class PolicyRule(BaseModel):
+    """One normalized policy rule extracted from a company document."""
+
+    id: str
+    condition: str = ""
+    outcome: str = ""
+    category: str = "global"
+    region: str = ""
+    effective_date: str = ""
+    text: str = ""
+    section_hash: str = ""
+
+
+class Remedy(BaseModel):
+    """Structured remedy extracted alongside a free-text reply.
+
+    Used for deterministic edit classification (minor vs major) — not judgment.
+    """
+
+    model_config = {"extra": "allow"}
+
+    remedy_type: str = ""
+    remedy_amount: Optional[float] = None
+    rule_cited: str = ""
+    escalate: bool = False
+
+
 class GeneratedReply(BaseModel):
     ticket_id: str
+    response_id: str = ""
     reply: str
+    remedy: Remedy = Field(default_factory=Remedy)
     retrieved_policy_chunks: list[str] = Field(default_factory=list)
-    retrieved_similar_tickets: list[str] = Field(default_factory=list)  # ticket_ids
+    retrieved_rule_ids: list[str] = Field(default_factory=list)
+    cited_rule_ids: list[str] = Field(default_factory=list)
+    retrieved_similar_tickets: list[str] = Field(default_factory=list)
+
+
+class EvaluationResult(BaseModel):
+    """RAGAS response-quality scores + deterministic diagnostics for one reply.
+
+    The three RAGAS metrics and the routing-only quality_score are stored
+    separately — never blended with human-feedback reliability.
+    """
+
+    ticket_id: str
+    response_id: str = ""
+    reply_source: str = "generated"  # generated | live
+    category: str = ""
+
+    # Tier-1 RAGAS (0-1 each; never blended with Tier-2)
+    faithfulness: Optional[float] = None
+    answer_relevancy: Optional[float] = None
+    context_precision: Optional[float] = None
+    quality_score: Optional[float] = None  # routing-only weighted combo
+    faithfulness_details: dict[str, Any] = Field(default_factory=dict)
+
+    # Dual-pass retrieval consistency
+    disagreement_checked: bool = False
+    retrieval_disagreement: Optional[bool] = None
+    topk_rule: str = ""
+    full_doc_rule: str = ""
+
+    # Gates
+    gated_from_auto: bool = False
+    scoring_error: str = ""
+
+    # Deterministic diagnostics (non-blended)
+    deterministic_penalty: int = 0
+    flags: list[str] = Field(default_factory=list)
+    lexical_overlap: float = 0.0
+
+    # Structured remedy from generation (for routing escalate)
+    remedy: Remedy = Field(default_factory=Remedy)
+    escalate: bool = False
+    escalate_reason: str = ""
 
 
 def detect_order_id(email: str, order_ids) -> Optional[str]:
@@ -83,46 +151,3 @@ def placeholder_transaction() -> "Transaction":
         order_date="",
         status="unknown",
     )
-
-
-class EvaluationResult(BaseModel):
-    """Every sub-score and justification for one scored reply."""
-
-    ticket_id: str
-    reply_source: str  # "generated" or "control"
-    category: str
-
-    # A. policy compliance judge
-    judge_policy_requires: str = ""
-    judge_cited_rule: str = ""
-    judge_reply_offers: str = ""
-    compliance_match_score: int = 0  # 1-5
-    compliance_justification: str = ""
-    # judge-derived escalation signal (read from the policy, not hardcoded).
-    # Defaults keep the batch pipeline and validate_metric.py unchanged.
-    escalate: bool = False
-    escalate_reason: str = ""
-
-    # B. alignment with actual reply
-    alignment: int = 0  # 1-5
-    alignment_justification: str = ""
-
-    # C. quality rubric (1-5 each)
-    groundedness: int = 0
-    tone_empathy: int = 0
-    clarity: int = 0
-    actionability: int = 0
-    quality_justification: str = ""
-
-    # D. deterministic checks
-    deterministic_penalty: int = 0
-    flags: list[str] = Field(default_factory=list)
-
-    # E. lexical overlap with actual reply (reported, not blended)
-    lexical_overlap: float = 0.0
-
-    # blended scores (0-100)
-    policy_score: float = 0.0
-    alignment_score: float = 0.0
-    quality_score: float = 0.0
-    final_score: float = 0.0

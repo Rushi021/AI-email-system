@@ -1,120 +1,153 @@
-"""Evaluation (internal) — batch results and metric-validation dashboards.
+"""Evaluation dashboard — two unblended panels:
 
-Required for the challenge submission; reads the artifacts written by
-`python pipeline.py --all`.
+1. Response Quality (RAGAS)
+2. System Reliability (Human Feedback)
+
+Every rate shows n and a Wilson CI; n < 20 → insufficient data.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from views.common import DATA, RESULTS, load_everything
+from src.storage.factory import get_structured_store
+from src.validate_metric import build_reliability_report
+from views.common import RESULTS, load_everything
 
 transactions, tickets, policy_store, retriever = load_everything()
 tickets_by_id = {t.ticket_id: t for t in tickets}
 
-st.title("📊 Evaluation (internal)")
+st.title("📊 Evaluation")
 st.caption(
-    "RAG over a policy PDF + past tickets, with a three-layer accuracy system. "
-    "Everything company-specific lives in `data/` — swap those files and the code runs unchanged."
+    "Two separate numbers — never blended. Response Quality is automated (RAGAS); "
+    "System Reliability comes only from real human feedback."
 )
 
-tab_results, tab_validation = st.tabs(["📊 Batch Results", "🧪 Metric Validation"])
 
-# ---------------------------------------------------------------- batch results
-with tab_results:
+def _render_rate(title: str, payload: dict) -> None:
+    n = payload.get("n") or 0
+    if payload.get("insufficient_data") or payload.get("rate") is None:
+        st.metric(title, "insufficient data", help=f"n={n} (need ≥20)")
+        st.caption(f"n = {n}")
+        return
+    rate = payload["rate"]
+    st.metric(
+        title,
+        f"{rate:.1%}",
+        help=f"n={n}, Wilson 95% CI [{payload.get('ci_low')}, {payload.get('ci_high')}]",
+    )
+    st.caption(
+        f"n = {n} · 95% CI [{payload.get('ci_low'):.3f}, {payload.get('ci_high'):.3f}]"
+    )
+
+
+tab_q, tab_r = st.tabs(["📈 Response Quality (RAGAS)", "🛡️ System Reliability (Human Feedback)"])
+
+# ---------------------------------------------------------------- RAGAS panel
+with tab_q:
     eval_path = RESULTS / "evaluation_results.json"
-    if not eval_path.exists():
-        st.warning("No results yet — run `python pipeline.py --all` first.")
+    ragas_rows = get_structured_store().query("ragas_scores", order_by="-timestamp")
+
+    if not eval_path.exists() and not ragas_rows:
+        st.warning("No RAGAS scores yet — run `python pipeline.py --all` or route live mail.")
     else:
-        results = json.loads(eval_path.read_text())
-        generated = [r for r in results if r["reply_source"] == "generated"]
-        gen_replies = {
-            g["ticket_id"]: g
-            for g in json.loads((RESULTS / "generated_replies.json").read_text())
-        }
+        results = []
+        if eval_path.exists():
+            results = json.loads(eval_path.read_text())
+        # Prefer live structured store when present.
+        source = ragas_rows if ragas_rows else results
 
-        overall = sum(r["final_score"] for r in generated) / len(generated)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Overall score (generated)", f"{overall:.1f} / 100")
-        c2.metric("Holdout tickets", len(generated))
-        c3.metric("Control (bad) replies", len(results) - len(generated))
+        faiths = [r.get("faithfulness") for r in source if r.get("faithfulness") is not None]
+        relevs = [r.get("answer_relevancy") for r in source if r.get("answer_relevancy") is not None]
+        precs = [r.get("context_precision") for r in source if r.get("context_precision") is not None]
+        gated = sum(1 for r in source if r.get("gated_from_auto"))
 
-        df = pd.DataFrame(generated)
-        st.subheader("Score by category")
-        st.bar_chart(df.groupby("category")["final_score"].mean())
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Faithfulness avg", f"{sum(faiths)/len(faiths):.3f}" if faiths else "—", help=f"n={len(faiths)}")
+        c2.metric("Answer relevancy avg", f"{sum(relevs)/len(relevs):.3f}" if relevs else "—", help=f"n={len(relevs)}")
+        c3.metric("Context precision avg", f"{sum(precs)/len(precs):.3f}" if precs else "—", help=f"n={len(precs)}")
+        c4.metric("Gated from AUTO", f"{gated} / {len(source)}")
 
-        st.subheader("Per-ticket detail")
-        for r in results:
-            t = tickets_by_id[r["ticket_id"]]
+        if faiths:
+            st.subheader("Faithfulness distribution")
+            st.bar_chart(pd.DataFrame({"faithfulness": faiths}))
+
+        st.subheader("Per-response detail")
+        for r in source:
+            tid = r.get("ticket_id") or r.get("response_id") or "?"
             label = (
-                f"{r['ticket_id']} · {r['category']} · {r['reply_source']} "
-                f"· final score {r['final_score']}"
+                f"{tid} · faith={r.get('faithfulness')} · "
+                f"relev={r.get('answer_relevancy')} · prec={r.get('context_precision')} · "
+                f"gated={r.get('gated_from_auto')}"
             )
             with st.expander(label):
-                st.markdown("**Incoming email**")
-                st.info(t.incoming_email)
-                st.markdown("**Actual reply (human agent)**")
-                st.success(t.actual_reply)
-                st.markdown(
-                    "**Generated reply**" if r["reply_source"] == "generated" else "**Control (deliberately bad) reply**"
-                )
-                if r["reply_source"] == "generated":
-                    st.warning(gen_replies[r["ticket_id"]]["reply"])
-                else:
-                    controls = json.loads((DATA / "control_examples.json").read_text())
-                    bad = next(c for c in controls if c["holdout_id"] == r["ticket_id"])
-                    st.error(bad["bad_reply"])
-                    st.caption(f"Why it's bad: {bad['why_bad']}")
+                st.json({
+                    k: r.get(k)
+                    for k in (
+                        "faithfulness", "answer_relevancy", "context_precision",
+                        "quality_score", "retrieval_disagreement", "disagreement_checked",
+                        "gated_from_auto", "scoring_error", "faithfulness_details", "flags",
+                    )
+                    if k in r or r.get(k) is not None
+                })
+                if tid in tickets_by_id:
+                    st.markdown("**Incoming email**")
+                    st.info(tickets_by_id[tid].incoming_email)
 
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Policy compliance", f"{r['compliance_match_score']}/5")
-                s2.metric("Alignment w/ actual", f"{r['alignment']}/5")
-                s3.metric(
-                    "Quality (g/t/c/a)",
-                    f"{r['groundedness']}/{r['tone_empathy']}/{r['clarity']}/{r['actionability']}",
-                )
-                s4.metric("Penalty", f"-{r['deterministic_penalty']}")
+# ---------------------------------------------------------- Reliability panel
+with tab_r:
+    report = build_reliability_report()
+    st.subheader("Critical error rate (labeled AUTO only)")
+    _render_rate("Critical error rate", report.get("critical_error_rate") or {})
+    cov = report.get("audit_coverage") or {}
+    st.caption(
+        f"Audit coverage: {cov.get('labeled_auto')} labeled AUTO "
+        f"/ {cov.get('all_auto')} total AUTO in queue"
+    )
 
-                st.markdown(
-                    f"- **Judge — policy requires:** {r['judge_policy_requires']} "
-                    f"(rule {r['judge_cited_rule']})\n"
-                    f"- **Judge — reply offers:** {r['judge_reply_offers']}\n"
-                    f"- **Compliance justification:** {r['compliance_justification']}\n"
-                    f"- **Alignment justification:** {r['alignment_justification']}\n"
-                    f"- **Quality justification:** {r['quality_justification']}\n"
-                    f"- **Flags:** {', '.join(r['flags']) or 'none'}\n"
-                    f"- **Lexical overlap with actual reply (reported only):** {r['lexical_overlap']:.2f}"
-                )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Overall reliability")
+        _render_rate("Reliability rate", report.get("reliability_rate") or {})
+    with c2:
+        st.subheader("Escalation-miss rate")
+        _render_rate("Escalation miss", report.get("escalation_miss_rate") or {})
 
-# ------------------------------------------------------------- metric validation
-with tab_validation:
-    report_path = RESULTS / "validation_report.json"
-    if not report_path.exists():
-        st.warning("No validation report yet — run `python pipeline.py --all` first.")
+    st.subheader("By category")
+    by_cat = report.get("critical_error_by_category") or {}
+    if by_cat:
+        rows = []
+        for cat, payload in by_cat.items():
+            rows.append({
+                "category": cat,
+                "rate": payload.get("rate"),
+                "n": payload.get("n"),
+                "ci_low": payload.get("ci_low"),
+                "ci_high": payload.get("ci_high"),
+                "insufficient_data": payload.get("insufficient_data"),
+            })
+        st.dataframe(pd.DataFrame(rows), width="stretch")
     else:
-        report = json.loads(report_path.read_text())
+        st.info("No feedback events yet.")
 
-        c1 = report["check_1_discriminative"]
-        st.subheader("1 · Discriminative check — does the metric catch bad replies?")
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Generated avg", c1["generated_avg_final_score"])
-        col_b.metric("Control (bad) avg", c1["control_avg_final_score"])
-        col_c.metric("Gap", c1["gap"])
-        st.write(c1["interpretation"])
+    st.subheader("Calibration — quality_score decile vs real acceptance")
+    cal = report.get("calibration") or {}
+    buckets = cal.get("buckets") or []
+    if buckets:
+        st.dataframe(pd.DataFrame(buckets), width="stretch")
+        st.caption(
+            "If a high-faithfulness / high-quality bucket still has a high critical-error "
+            "rate, tighten FAITHFULNESS_GATE in Settings."
+        )
+    else:
+        st.info("Need feedback events with joined RAGAS scores for calibration.")
 
-        c2 = report["check_2_correlation"]
-        st.subheader("2 · Correlation check — meaning vs word overlap")
-        st.metric("Pearson r (alignment vs lexical overlap)", c2["pearson_r_alignment_vs_lexical_overlap"])
-        st.write(c2["interpretation"])
-        if c2["divergent_examples"]:
-            st.dataframe(pd.DataFrame(c2["divergent_examples"]))
-
-        c3 = report["check_3_judge_trust"]
-        st.subheader("3 · Compliance-judge trust check — can we trust the judge at all?")
-        st.metric("Agreement with hand-labeled ground truth", f"{c3['agreement']} ({c3['agreement_rate']:.0%})")
-        st.write(c3["interpretation"])
-        st.dataframe(pd.DataFrame(c3["comparisons"]))
+    st.subheader("Weekly trend")
+    weekly = report.get("weekly_reliability") or []
+    if weekly:
+        st.dataframe(pd.DataFrame(weekly), width="stretch")
+    st.caption(f"Total feedback events: n = {report.get('n_feedback_events', 0)}")

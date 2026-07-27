@@ -10,3 +10,14 @@ numpy
 pypdf
 fpdf2
 mcp
+rank-bm25
+sentence-transformers
+PyMuPDF
+python-docx
+ragas==0.4.3
+instructor
+langchain-community>=0.4.2
+langchain-openai>=1.4
+langchain-core>=1.5.1
+
+

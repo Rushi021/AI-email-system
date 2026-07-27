@@ -6,7 +6,11 @@ Context for any Claude session working in this repo. Read this before changing c
 
 A submission for the Hiver Open Challenge: generate suggested replies to customer-support
 emails using an LLM grounded in a company's own data (policy PDF + transactions + past
-tickets), and — the heaviest-graded part — **measure accuracy with a validated metric**.
+tickets), and measure accuracy with **two unblended scores**:
+
+1. **Response Quality (RAGAS)** — automated, reference-free, on every generated reply.
+2. **System Reliability (human feedback)** — empirical, from real Review-dashboard actions only.
+
 We simulate one fictional company (NorthPeak Outdoor Gear) but the code is company-agnostic.
 
 ## The one inviolable design rule
@@ -20,184 +24,102 @@ or prompts — all company facts are injected at runtime from `data/`.
 ## Architecture
 
 ```
-incoming email ─► PolicyStore (TF-IDF over any PDF)      src/policy_store.py
-             ─► TicketRetriever (TF-IDF, corpus split)   src/retriever.py
+incoming email ─► PolicyStore (format-aware ingest + BM25/embeddings/RRF)
+                  src/policy_ingest.py + src/policy_store.py
+                  cache via BlobStore: policy_index/*
+             ─► intent scope (dynamic categories from loaded policy)  src/intent.py
+             ─► TicketRetriever (TF-IDF; dataset corpus + user_examples)
              ─► Transaction lookup                       data/transactions.json
-             ─► generator (LLM, RAG prompt)              src/generator.py + src/prompts.py
-             ─► evaluator (3 layers + penalties)         src/evaluator.py
-             ─► metric validation (3 checks)             src/validate_metric.py
-pipeline.py = batch CLI · app.py + views/ = Streamlit UI · results/*.json = outputs
-
-Automation layer (built on the same generator + evaluator):
-  inbox (MCP server | demo)  ─► email_source.py  ─► IncomingEmail[]
-                             ─► email_parser.py  (normalize body: strip HTML/quotes/
-                                  whitespace; surface SPF/DKIM/DMARC if the connector
-                                  supplied an Authentication-Results header)
-                             ─► event_bus.py  (SQLite queue, results/event_bus.db —
-                                  publish, then drain() isolates each email in its own
-                                  try/except: retry up to 3x, else dead-letter; one bad
-                                  email never blocks the rest of the batch)
-                             ─► classifier.py  (LLM categorizes into refund /
-                                cancellation / complain / billing / technical_support /
-                                general_inquiry / other=noise; frustration = cheap regex;
-                                CLASSIFY_LLM_* provider/model, separate from generation)
-                             ─► router.py  (reuses generate_reply + evaluate_reply)
-                                  AUTO / REVIEW / ESCALATE / IGNORE + confidence + priority
-                             ─► queue_store.py (SQLite results/queue.db)
-                             ─► notify.py (email digest via the connector)
-Streamlit st.navigation: Assistant · Inbox · Review · Settings · Evaluation.
-Non-secret runtime config in config.json (src/config.py); secrets stay in .env.
+             ─► generator (reply + cited_rules + structured remedy)
+                  src/generator.py + src/prompts.py
+             ─► RAGAS evaluator (faithfulness / relevancy / context precision)
+                  src/ragas_evaluator.py + src/evaluator.py
+                  + sampled dual-pass retrieval disagreement
+                  + deterministic diagnostics (non-blended)
+             ─► router (AUTO gated by faithfulness + disagreement)
+             ─► feedback_events (Review actions) → src/reliability.py
+pipeline.py = batch CLI · app.py + views/ = Streamlit UI
+src/storage/ = pluggable StructuredStore + BlobStore (default local)
 ```
 
-- **Scoring formula** (do not change weights casually — they're justified in README §5):
-  `final = max(0, 0.45·policy_compliance + 0.25·alignment + 0.30·quality − penalty)`,
-  each component 0–100, penalty capped at 20. Quality sub-weights: groundedness .25,
-  tone .25, clarity .20, actionability .30. Lexical overlap (difflib) is **reported,
-  never blended**.
-- **Compliance judge** derives the correct remedy itself from the policy text. It gets the
-  **full policy** when the document is ≤12K chars (retrieval ranking once made it fixate on
-  the wrong rule), top-k chunks otherwise. Its `rule` field must be a bare ID ("R1.1") —
-  the prompt enforces this; `validate_metric.py` compares that ID against hand labels.
+- **Two headline numbers, never blended.** Tier-1 RAGAS scores and Tier-2 reliability rates
+  are stored and displayed separately. Routing-only combo:
+  `quality_score = 0.5·faithfulness + 0.3·answer_relevancy + 0.2·context_precision`.
+- **Hard AUTO gate:** `faithfulness < FAITHFULNESS_GATE` (default 0.7) OR
+  `retrieval_disagreement == true` OR scoring failure → never AUTO.
+- **Critical error rate** uses only human-labeled AUTO responses as denominator; report
+  audit coverage separately. Every rate has `n` + Wilson CI; `n < 20` → insufficient data.
+- **No hand labels / no synthetic controls.** `expected_outcomes.json` and
+  `control_examples.json` are deleted. Do not reintroduce them.
+- **Generation grounding hierarchy:** policy rule chunks determine the remedy; transaction
+  confirms conditions; past tickets teach voice/tone only. Structured `remedy` object enables
+  deterministic edit classification (minor vs major) at Send time.
+- **RAGAS API:** pin `ragas==0.4.3`. Use `ragas.metrics.collections.*.ascore(**kwargs)`.
+  Never `SingleTurnSample` / `.single_turn_ascore()`. LLM via native
+  `llm_factory(model, provider=..., client=...)` for openai/mistral/anthropic.
+  Embeddings via `embedding_factory("huggingface", model=...)`; hash shim only for mock.
 
 ## Automation layer (routing → queue → review)
 
-- **`src/email_parser.py`** — `parse(email) -> IncomingEmail` runs right after fetch, before
-  anything else touches the email. Strips HTML tags, truncates quoted-reply/signature blocks
-  ("On ... wrote:", "-----Original Message-----", trailing `>` quotes, `--` signature delimiter),
-  collapses whitespace, folds smart punctuation. Returns a new `IncomingEmail` with `body`
-  replaced by the cleaned text and `parse_flags` recording what changed (`html_stripped`,
-  `quote_stripped`, `empty_after_clean`) — so classification/retrieval/generation always see
-  one consistent shape regardless of which connector produced the raw email. Also reads
-  `auth_status` (`pass`/`fail`/`unavailable`) off a provider-supplied `Authentication-Results`
-  header when present (`raw_headers` on `IncomingEmail`) — this is **not** SPF/DKIM/DMARC
-  verification performed locally, just surfacing what the provider already checked; the demo
-  connector has no headers so it correctly reports `unavailable`, never a fabricated pass.
-- **`src/event_bus.py`** — SQLite queue at `results/event_bus.db` (gitignored), same
-  single-file pattern as `queue_store.py`. `publish()` enqueues a parsed email (idempotent per
-  `email_id`); `drain(process_fn)` pops every pending row and runs `process_fn` inside its own
-  try/except — success acks the row, a raised exception increments `attempts` and requeues
-  (< `MAX_ATTEMPTS`=3) or moves the row to `dead_letter`. This is the actual isolation
-  guarantee: one email's exception can never stop the rest of a sync from routing.
-  `views/inbox.py::_route_and_queue` is the caller — publish every fetched+parsed email, then
-  `drain()` with `process_fn = router.route_email + queue_store.upsert`; the UI surfaces any
-  dead-lettered emails in a warning instead of silently dropping them.
-- **`src/classifier.py`** — `classify(text, has_order) -> ClassificationResult` (category,
-  is_noise, frustrated). Uses `llm_client.complete(..., purpose="classify")` to pick one of
-  refund / cancellation / complain / billing / technical_support / general_inquiry / other.
-  `other` ⇒ `is_noise` (router IGNORE, no generation). If `has_order` and the model returns
-  `other`, remap to `general_inquiry` so order mail is never dismissed. Frustration stays a
-  cheap regex for queue priority only. Prompt lives in `prompts.CLASSIFIER_*`.
-- **`src/router.py`** turns one `IncomingEmail` into a decision, reusing `generate_reply`
-  + `evaluate_reply` unchanged. Live emails have no human reply, so alignment is dropped and
-  **live confidence** = `clamp(0.6·policy_score + 0.4·quality_score − penalty, 0, 100)`.
-  Decision: ESCALATE if the judge's `escalate` flag is true or `conf < t2`; AUTO if
-  `conf ≥ t1` AND zero deterministic flags AND a rule was cited AND not escalate; else REVIEW;
-  IGNORE when classifier category is `other` (noise) — no generation/eval spent.
-- **Escalation is company-agnostic:** the compliance judge emits a boolean `escalate` +
-  `escalate_reason` derived from the policy text (prompts.py / EvaluationResult). Never hardcode
-  R6/R7 or any rule id in router code. Thresholds `t1`/`t2` live in config.json, not code.
-- **`src/email_source.py`** — one connector interface (like llm_client). `demo` reads
-  `data/demo_inbox.json` (offline, no creds); `mcp` is an MCP client to a Gmail MCP server
-  (`MCP_SERVER_URL` + `MCP_AUTH_TOKEN` in .env, `mcp` SDK, async wrapped in `asyncio.run`).
-  Tool names auto-map by capability (`_pick_tool`) with config overrides; the `mcp` import is
-  lazy so the app runs without the SDK. Live sends are gated by `config["live_send"]` (default
-  off = dry-run; `send_reply(..., dry_run=...)`).
-- **`src/queue_store.py`** — SQLite queue at `results/queue.db` (gitignored). `upsert` dedupes on
-  `email_id` and never clobbers a human status (sent/simulated/dismissed) on re-route. Priority =
-  decision band (escalate>review>auto) + value + frustration; dashboard sorts desc.
-- **`src/notify.py`** — `send_digest` emails pending review+escalation items via the connector;
-  fired on demand or after a sync when `digest_enabled`. No scheduler yet.
-- Each of router / queue_store / email_source / email_parser / event_bus / classifier has a
-  `python -m src.<mod>` offline self-check.
+- `src/email_parser.py` — normalize body before classify/generate.
+- `src/event_bus.py` — StructuredStore table `event_bus`; retry ×3 then dead-letter.
+- `src/classifier.py` — LLM triage; `other` ⇒ IGNORE.
+- `src/router.py` — generate → RAGAS evaluate → decide; confidence = `quality_score * 100`
+  minus deterministic penalty. Escalation from structured `remedy.escalate`.
+- `src/queue_store.py` — StructuredStore table `queue`.
+- `src/feedback.py` — append-only `feedback_events` from Review actions.
+- `src/notify.py` — digest of pending review+escalation.
+- Streamlit: Assistant · Inbox · Review · Settings · Evaluation.
 
-## Data-leakage rules (grading depends on these)
+## Storage
 
-1. `data/expected_outcomes.json` (hand-labeled ground truth) is read **only** by
-   `src/validate_metric.py`. Never feed it to the generator or the per-response evaluator.
+Third pluggable adapter (with LLM + email):
+
+| Primitive | Interface | Default | Opt-in |
+|---|---|---|---|
+| Structured | `get_structured_store()` | LocalSQLiteStore | Postgres |
+| Blob | `get_blob_store()` | LocalFileBlobStore | S3 / Azure / GCS / Postgres bytea |
+
+Nothing outside `src/storage/` imports `sqlite3`, `boto3`, `azure.storage.blob`, or
+`google.cloud.storage`. Bootstrap provider selection is always local `config.json` / `.env`.
+Company source-of-truth files (`policy.pdf`, `transactions.json`, `dataset.json`) stay as
+swap-the-files; operational data (queue, feedback, scores, index cache, generated JSON)
+goes through the storage layer.
+
+## Data-leakage rules
+
+1. No pre-written "correct answer" file for any ticket.
 2. `TicketRetriever` fits **only on `split == "corpus"`** tickets. Holdout tickets must
    never be retrievable.
-3. Control examples (`data/control_examples.json`) are scored by the same evaluator as
-   generated replies — that's the point (discriminative check).
+3. User examples (`user_examples` table / Settings) are production-only — never the batch
+   eval harness.
 
 ## LLM access
 
-- One interface: `src/llm_client.py :: complete(system, user, max_tokens, purpose=...)`.
-  `purpose="generate"` (default) uses `LLM_PROVIDER` / `LLM_MODEL` — generation + judges.
-  `purpose="classify"` uses `CLASSIFY_LLM_PROVIDER` / `CLASSIFY_LLM_MODEL` (falls back to
-  `LLM_*`). Providers: `anthropic` (default, `claude-opus-4-8`) · `openai` (`gpt-4o`) ·
-  `mistral` (`mistral-small-latest`, OpenAI-compatible at `https://api.mistral.ai/v1`,
-  throttled ~1 req/s, `max_retries=8`) · `mock` (offline stub). Settings exposes both steps.
-- **Current active setup: generation + classify on `mistral` with `MISTRAL_API_KEY` in `.env`**
-  (free tier — keep calls frugal; a full pipeline run ≈ 24 generation/judge calls; inbox
-  sync adds 1 classify call per email).
-- Judges return JSON parsed by `llm_client.extract_json()` (handles fences/prose — don't
-  replace with bare `json.loads`).
+- `src/llm_client.py :: complete(system, user, max_tokens, purpose=...)` plus
+  `get_sdk_client()` for RAGAS.
+- `purpose="generate"` → `LLM_*`; `purpose="classify"` → `CLASSIFY_LLM_*`.
+- Providers: anthropic · openai · mistral · mock.
 - Never print, log, or commit key values. `.env` is gitignored.
 
 ## Environment & how to run
 
-- Python venv at `.venv` (Python 3.12 via Homebrew — system python is 3.9, too old).
-  Use `.venv/bin/python` / `.venv/bin/streamlit`, not bare `python`.
-- `python pipeline.py --all` → writes `results/generated_replies.json`,
-  `evaluation_results.json`, `validation_report.json`, prints summary.
-- `--limit 1` = trial mode: exactly 5 LLM calls (1 generation + 2 evaluations × 2 calls).
-- **`EVAL_TODAY=2026-07-07`** must be set when evaluating: dataset dates are anchored
-  around 2026-07-07 and the date-window rules (30/90-day returns, 1-year warranty) resolve
-  wrong otherwise.
-- `streamlit run app.py` for the UI. Verify UI changes with
-  `streamlit.testing.v1.AppTest` (see git history) rather than manual clicking.
-- `scripts/build_policy_pdf.py` regenerates `data/policy.pdf` (fpdf2 — `multi_cell`
-  needs `new_x="LMARGIN", new_y="NEXT"` or it crashes).
+- Python venv at `.venv` (Python 3.12). Use `.venv/bin/python`.
+- `python pipeline.py --all` → generate → RAGAS evaluate → reliability report.
+- `--limit 1` = trial on one holdout ticket.
+- `streamlit run app.py` for the UI.
+- Optional cloud deps: `pip install -r requirements-storage.txt`.
 
 ## Dataset invariants (if you edit data/)
 
-- 24 tickets: 18 `corpus` / 6 `holdout` (H01–H06). Holdouts are *scenarios distinct from
-  corpus*, each targeting a different policy branch incl. escalations (R6 high-value,
-  R7 frequent-returner) and one branch with no corpus precedent (H06, unconfirmed
-  duplicate charge).
-- Every ticket's `order_id` must exist in `transactions.json`; the transaction's fields
-  must actually satisfy the policy branch the ticket is supposed to exercise (the judge
-  reads the transaction record).
-- Every policy rule states BOTH grant and denial conditions — required so the compliance
-  judge can tell right from wrong.
-- If you add/change holdouts or controls, update `expected_outcomes.json` labels
-  (remedy + rule ID) by hand-reading the policy — they are the trust anchor for check 3.
+- 24 tickets: 18 `corpus` / 6 `holdout` (H01–H06).
+- Every ticket's `order_id` must exist in `transactions.json`.
+- Every policy rule states BOTH grant and denial conditions.
 
-## Known gotchas / past mistakes (don't repeat)
+## Known gotchas
 
-- Judge `rule` field: small models write sentences into it unless the prompt demands the
-  bare identifier — keep the "Field rules" block in `COMPLIANCE_JUDGE_SYSTEM`.
-- Feeding the judge top-k chunks instead of the full (small) policy caused a wrong-rule
-  fixation. Keep the ≤12K-chars full-document path in `evaluator.py`.
-- `ALIGNMENT_QUALITY_SYSTEM` is `.format()`ed → literal JSON braces in it must be `{{ }}`.
-  `COMPLIANCE_JUDGE_SYSTEM` is NOT formatted → single braces are fine there.
-- Committed `results/*.json` should come from a real provider run, not `mock`.
-- Pushing to GitHub is fine going forward (earlier "commit locally only" note lifted
-  2026-07-25) — still create real commits, never force-push, never push secrets.
-
-## Current state (as of 2026-07-25)
-
-- **Ingestion hardened**: `email_parser.py` normalizes every fetched email (HTML/quote/
-  signature stripping, whitespace/punctuation normalization) before classification or
-  generation ever sees it, and surfaces a provider auth signal (`auth_status`) when the
-  connector supplies headers. `event_bus.py` (SQLite, `results/event_bus.db`) sits between
-  fetch and routing — `views/inbox.py` publishes every parsed email then drains the queue with
-  per-email try/except isolation (retry ×3, then dead-letter), so one bad email can no longer
-  crash a whole inbox sync the way the old bare `for` loop could. `classifier.py` is an LLM
-  triage stage (7 categories; `other` = noise/IGNORE) with separate Settings model selection
-  from generation (`CLASSIFY_LLM_*` vs `LLM_*`).
-- **Verified offline:** `python -m src.<mod>` self-checks pass for all six automation-layer
-  modules (router, email_source, queue_store, email_parser, event_bus, classifier), including
-  event_bus's isolated-failure/retry/dead-letter/recovery test; a `streamlit.testing.v1.AppTest`
-  run of the Inbox page (mock provider) synced the 5-email demo inbox through
-  parse → event_bus → classifier → router → queue_store end-to-end with zero exceptions and
-  zero dead-letters.
-- **Automation layer added** (router / email_source / queue_store / notify / config) plus
-  Inbox + Review Streamlit pages and expanded Settings (email connector, thresholds, live-send,
-  notifications). Connector = MCP client + offline demo inbox (`data/demo_inbox.json`, 5 emails
-  covering auto/review/escalate×2/ignore).
-- **NOT yet verified live:** the Mistral free-tier key in `.env` now returns **401 Unauthorized**
-  (worked at build time, since expired). Semantic routing correctness (judge citing R6/R7 and
-  setting `escalate`) needs a valid `MISTRAL_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.
-- Full 24-call batch run still NOT executed — `results/` holds the original 1-ticket trial.
-- Keep README.md in sync with design changes.
+- Fail closed: RAGAS/scoring errors gate AUTO → REVIEW.
+- `retrieval_disagreement` is nullable when sampling skips the check — store
+  `disagreement_checked` separately; never treat "not checked" as agreement.
+- A percentage with no `n` next to it must not render in the Evaluation UI.
+- Pushing to GitHub is fine — create real commits, never force-push, never push secrets.

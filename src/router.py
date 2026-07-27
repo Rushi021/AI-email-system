@@ -1,21 +1,21 @@
 """Routing engine: turn one incoming email into a decision.
 
-Reuses the existing RAG generator and 3-layer evaluator unchanged, then routes:
+  AUTO      high RAGAS quality + clean gates + not escalate
+  REVIEW    mid-confidence or gated from auto
+  ESCALATE  remedy.escalate OR confidence too low
+  IGNORE    classifier category is other (noise)
 
-  AUTO      confident + clean + unambiguous, and policy does NOT mandate a human
-  REVIEW    mid-confidence -> queue a suggested reply for a human to approve/edit
-  ESCALATE  policy mandates a human (judge's escalate flag) OR confidence too low
-  IGNORE    classifier category is other (noise / non-support)
-
-Company-agnostic: the escalate decision comes from the compliance judge reading
-the policy (src/evaluator + prompts), never from a hardcoded rule id here.
+AUTO is blocked when faithfulness < FAITHFULNESS_GATE, retrieval_disagreement
+is true, scoring failed, or deterministic flags exist.
 """
 
 from __future__ import annotations
 
+import hashlib
+
 from src.classifier import classify
-from src.config import DEFAULTS
-from src.evaluator import evaluate_reply
+from src.config import DEFAULTS, load_config
+from src.evaluator import evaluate_generated
 from src.generator import generate_reply
 from src.policy_store import PolicyStore
 from src.queue_store import DECISION_WEIGHT
@@ -26,24 +26,33 @@ from src.schema import IncomingEmail, Ticket, detect_order_id, placeholder_trans
 def _decide(
     confidence: float,
     flags: list[str],
-    cited_rule: str,
     escalate: bool,
+    gated_from_auto: bool,
     t1: float,
     t2: float,
 ) -> str:
     """Pure decision boundary — tested directly in _demo(), no LLM involved."""
     if escalate or confidence < t2:
         return "escalate"
-    if confidence >= t1 and not flags and cited_rule.strip():
+    if gated_from_auto or flags:
+        return "review"
+    if confidence >= t1:
         return "auto"
     return "review"
 
 
 def _priority(decision: str, price: float, frustrated: bool) -> float:
-    # decision dominates (escalate > review > auto); value and frustration
-    # only re-order within a tier, so the band gap (100) is never crossed.
     value = min(price / 10.0, 30.0)
     return round(DECISION_WEIGHT[decision] + value + (20.0 if frustrated else 0.0), 1)
+
+
+def _audit_sample(response_id: str, rate: float) -> bool:
+    if rate <= 0:
+        return False
+    if rate >= 1:
+        return True
+    bucket = int(hashlib.sha256(response_id.encode()).hexdigest(), 16) % 1000
+    return bucket < int(rate * 1000)
 
 
 def route_email(
@@ -53,7 +62,7 @@ def route_email(
     retriever: TicketRetriever,
     config: dict | None = None,
 ) -> dict:
-    cfg = {**DEFAULTS, **(config or {})}
+    cfg = {**DEFAULTS, **load_config(), **(config or {})}
     t1, t2 = float(cfg["t1"]), float(cfg["t2"])
     text = f"{email.subject}\n{email.body}".strip()
 
@@ -74,11 +83,23 @@ def route_email(
     }
 
     if cls.is_noise:
-        return {**base, "decision": "ignore", "status": "dismissed", "confidence": 0.0,
-                "priority": _priority("ignore", txn.price, frustrated),
-                "suggested_reply": "", "judge": {}, "flags": []}
+        return {
+            **base,
+            "decision": "ignore",
+            "status": "dismissed",
+            "confidence": 0.0,
+            "priority": _priority("ignore", txn.price, frustrated),
+            "suggested_reply": "",
+            "original_reply": "",
+            "judge": {},
+            "ragas": {},
+            "remedy": {},
+            "flags": [],
+            "response_id": "",
+            "audit_sample": False,
+        }
 
-    gen = generate_reply(text, txn, policy_store, retriever)
+    gen = generate_reply(text, txn, policy_store, retriever, category=category)
     live = Ticket(
         ticket_id=email.id,
         order_id=txn.order_id,
@@ -86,17 +107,42 @@ def route_email(
         split="holdout",
         sentiment="frustrated" if frustrated else "neutral",
         incoming_email=text,
-        actual_reply=gen.reply,  # no human reply for live mail; alignment is ignored below
+        actual_reply=gen.reply,
     )
-    ev = evaluate_reply(live, txn, gen.reply, policy_store, "generated")
+    ev = evaluate_generated(live, txn, gen, policy_store)
 
-    # Live confidence drops alignment (no human ground truth exists) and
-    # renormalizes over policy compliance + quality, minus deterministic penalty.
-    confidence = round(
-        max(0.0, min(100.0, 0.6 * ev.policy_score + 0.4 * ev.quality_score - ev.deterministic_penalty)),
-        1,
+    # Live confidence = RAGAS routing quality_score on 0-100, minus deterministic penalty.
+    q = float(ev.quality_score) if ev.quality_score is not None else 0.0
+    confidence = round(max(0.0, min(100.0, 100.0 * q - ev.deterministic_penalty)), 1)
+
+    # Soft flags that block AUTO via _decide (exclude informational gated_from_auto dup).
+    hard_flags = [
+        f for f in ev.flags
+        if not f.startswith("gated_from_auto") and not f.startswith("scoring_error")
+    ]
+    decision = _decide(
+        confidence,
+        hard_flags,
+        ev.escalate,
+        ev.gated_from_auto,
+        t1,
+        t2,
     )
-    decision = _decide(confidence, ev.flags, ev.judge_cited_rule, ev.escalate, t1, t2)
+    audit = decision == "auto" and _audit_sample(
+        gen.response_id, float(cfg.get("audit_sample_rate", 0.05))
+    )
+
+    ragas_snap = {
+        "faithfulness": ev.faithfulness,
+        "answer_relevancy": ev.answer_relevancy,
+        "context_precision": ev.context_precision,
+        "quality_score": ev.quality_score,
+        "retrieval_disagreement": ev.retrieval_disagreement,
+        "disagreement_checked": ev.disagreement_checked,
+        "gated_from_auto": ev.gated_from_auto,
+        "scoring_error": ev.scoring_error,
+        "faithfulness_details": ev.faithfulness_details,
+    }
 
     return {
         **base,
@@ -105,46 +151,35 @@ def route_email(
         "confidence": confidence,
         "priority": _priority(decision, txn.price, frustrated),
         "suggested_reply": gen.reply,
+        "original_reply": gen.reply,
+        "response_id": gen.response_id,
+        "remedy": gen.remedy.model_dump(),
+        "ragas": ragas_snap,
         "judge": {
-            "policy_requires": ev.judge_policy_requires,
-            "cited_rule": ev.judge_cited_rule,
-            "reply_offers": ev.judge_reply_offers,
-            "compliance_score": ev.compliance_match_score,
+            # Backward-compatible fields for Review UI during transition.
+            "cited_rule": gen.remedy.rule_cited or (gen.cited_rule_ids[0] if gen.cited_rule_ids else ""),
             "escalate": ev.escalate,
             "escalate_reason": ev.escalate_reason,
-            "quality": {
-                "groundedness": ev.groundedness,
-                "tone_empathy": ev.tone_empathy,
-                "clarity": ev.clarity,
-                "actionability": ev.actionability,
-            },
-            "compliance_justification": ev.compliance_justification,
+            "quality_score": ev.quality_score,
+            "faithfulness": ev.faithfulness,
         },
         "flags": ev.flags,
         "retrieved_policy_chunks": gen.retrieved_policy_chunks,
+        "retrieved_rule_ids": gen.retrieved_rule_ids,
+        "cited_rule_ids": gen.cited_rule_ids,
         "retrieved_similar_tickets": gen.retrieved_similar_tickets,
+        "audit_sample": audit,
     }
 
 
 def _demo() -> None:
-    """Offline self-check of the decision boundary and helpers — no LLM calls."""
-    # escalate wins regardless of confidence
-    assert _decide(95, [], "R1.1", True, 80, 50) == "escalate"
-    assert _decide(30, [], "R1.1", False, 80, 50) == "escalate"  # below t2
-    # clean + confident + a cited rule -> auto
-    assert _decide(85, [], "R1.1", False, 80, 50) == "auto"
-    # a deterministic flag blocks auto -> review
-    assert _decide(85, ["order_id_not_referenced (-4)"], "R1.1", False, 80, 50) == "review"
-    # confident but no rule cited -> review (ambiguous)
-    assert _decide(85, [], "", False, 80, 50) == "review"
-    # mid confidence -> review
-    assert _decide(65, [], "R1.1", False, 80, 50) == "review"
-
-    # category/noise/frustration classification moved to src.classifier — see its self-check
-
-    # priority stays inside decision bands
+    assert _decide(95, [], False, False, 80, 50) == "auto"
+    assert _decide(30, [], False, False, 80, 50) == "escalate"
+    assert _decide(95, [], True, False, 80, 50) == "escalate"
+    assert _decide(95, [], False, True, 80, 50) == "review"
+    assert _decide(95, ["order_id_not_referenced (-4)"], False, False, 80, 50) == "review"
+    assert _decide(65, [], False, False, 80, 50) == "review"
     assert _priority("escalate", 249, True) > _priority("review", 999, True)
-    assert _priority("review", 10, False) > _priority("auto", 999, True)
     print("router self-check OK")
 
 

@@ -1,12 +1,28 @@
 [
   {
     "ticket_id": "H01",
-    "reply": "Hi Victor,\n\nI\u2019m truly sorry about the mix-up with your Down Vest (ORD-1021). I\u2019ve reviewed your order, and I see the issue\u2014you received the olive color instead of the navy you ordered. Since the vest is still in its original condition with tags attached, it qualifies for a full refund under our standard return policy.\n\nI\u2019ll process the refund of $88.00 to your original payment method right away, and you should see it in 3-5 business days depending on your bank. No return shipping is needed. I\u2019ve also flagged this to our team to prevent similar issues in the future. Thanks for your patience, and I apologize again for the inconvenience.",
+    "response_id": "H01-8f0d2522be46",
+    "reply": "Hi, thanks for reaching out about your order ORD-1021. Based on our policy (per R7) I've reviewed your request and here is the outcome, along with the next steps we will take to resolve it. (mock reply generated offline without an API key; set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env for real output)",
+    "remedy": {
+      "remedy_type": "refund",
+      "remedy_amount": null,
+      "rule_cited": "R7",
+      "escalate": false
+    },
     "retrieved_policy_chunks": [
-      "R4.2 Warranty - misuse\nDamage resulting from misuse, accident, or normal wear and tear is NOT covered by warranty. Such claims MUST be\ndeclined, though the agent MAY offer a one-time 15% discount code on a replacement purchase as goodwill.",
-      "R2.1 Shipping - delay\nIf an order is delivered more than 5 business days after the promised delivery date, the customer MUST be offered a\nshipping credit equal to the shipping fee paid (minimum $10 credit). Delays of 5 business days or fewer do NOT qualify\nfor compensation.",
-      "R7 Escalation - frequent returner\nAny customer with 3 or more returns in the past 90 days MUST be flagged for manual review before any new return or\nrefund is approved, even if the individual request would otherwise qualify under R1. The agent MUST NOT auto-approve\nthe remedy; the reply should acknowledge the request and state it is under review.",
-      "R6 Escalation - high value or unclear\nAny case where the disputed value exceeds $200, or that does not clearly fall under rules R1-R5, MUST be escalated to\na human senior agent. The system or agent MUST NOT resolve such cases autonomously, even if a lower-numbered\nrule appears to apply."
+      "R7 Escalation - frequent returner\nAny customer with 3 or more returns in the past 90 days MUST be flagged for manual review before any new return or refund is approved, even if the individual request would otherwise qualify under R1. The agent MUST NOT auto-approve the remedy; the reply should acknowledge the request and state it is under review.",
+      "R1.1 Returns - standard window\nA return requested within 30 days of the delivery date, where the item is unworn and in original condition, MUST be granted a full refund to the original payment method. A return of a worn or damaged-by-customer item does NOT qualify for a refund under this rule.",
+      "R1.2 Returns - extended window\nA return requested between 31 and 90 days after the delivery date MUST be offered store credit only. A full cash refund MUST NOT be offered in this window, even if the item is unworn.",
+      "R6 Escalation - high value or unclear\nAny case where the disputed value exceeds $200, or that does not clearly fall under rules R1-R5, MUST be escalated to a human senior agent. The system or agent MUST NOT resolve such cases autonomously, even if a lower-numbered rule appears to apply."
+    ],
+    "retrieved_rule_ids": [
+      "R7",
+      "R1.1",
+      "R1.2",
+      "R6"
+    ],
+    "cited_rule_ids": [
+      "R7"
     ],
     "retrieved_similar_tickets": [
       "T16",

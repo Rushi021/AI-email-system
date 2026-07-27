@@ -2,7 +2,13 @@
 config.json
 results/queue.db
 results/event_bus.db
+results/feedback.db
+results/ragas_scores.db
+results/user_examples.db
+results/app.db
+results/policy_index/
 __pycache__/
 *.pyc
 .venv/
 .DS_Store
+policy_index/

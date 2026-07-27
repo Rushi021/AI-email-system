@@ -10,40 +10,233 @@ Two LLM steps can use different providers/models:
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
+from pathlib import Path
 
 import streamlit as st
 
 from src import email_source, llm_client, notify
 from src.classifier import CATEGORY_LABELS
 from src.config import load_config, save_config
-from views.common import DATA, PROVIDER_KEY_VARS, load_everything, update_env
+from views.common import (
+    DATA,
+    PROVIDER_KEY_VARS,
+    load_everything,
+    load_user_examples,
+    save_user_examples,
+    update_env,
+)
+
+
+def _parse_examples_upload(raw: bytes, filename: str) -> list[dict]:
+    """Validate CSV/JSON bulk upload into user_examples rows."""
+    name = (filename or "").lower()
+    rows: list[dict] = []
+    if name.endswith(".json"):
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            data = data.get("examples") or data.get("tickets") or [data]
+        if not isinstance(data, list):
+            raise ValueError("JSON must be a list of objects")
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            email = str(item.get("incoming_email") or "").strip()
+            reply = str(item.get("actual_reply") or "").strip()
+            if not email or not reply:
+                continue
+            row = {"incoming_email": email, "actual_reply": reply}
+            if item.get("order_id"):
+                row["order_id"] = str(item["order_id"]).strip()
+            if item.get("ticket_id"):
+                row["ticket_id"] = str(item["ticket_id"]).strip()
+            rows.append(row)
+        return rows
+
+    text = raw.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    for item in reader:
+        email = str(item.get("incoming_email") or "").strip()
+        reply = str(item.get("actual_reply") or "").strip()
+        if not email or not reply:
+            continue
+        row = {"incoming_email": email, "actual_reply": reply}
+        if item.get("order_id"):
+            row["order_id"] = str(item["order_id"]).strip()
+        if item.get("ticket_id"):
+            row["ticket_id"] = str(item["ticket_id"]).strip()
+        rows.append(row)
+    return rows
+
 
 st.title("⚙️ Settings")
+cfg = load_config()
 
 # ------------------------------------------------------------- policy document
 st.header("Policy document")
 
-policy_path = DATA / "policy.pdf"
+policy_name = cfg.get("policy_filename") or "policy.pdf"
+policy_path = DATA / policy_name
 _, _, policy_store, _ = load_everything()
 
 if policy_path.exists():
     size_kb = policy_path.stat().st_size / 1024
+    stats = getattr(policy_store, "last_ingest_stats", {}) or {}
     st.markdown(
         f"Currently loaded: **{policy_path.name}** · {size_kb:.0f} KB · "
-        f"{len(policy_store.chunks)} indexed clauses"
+        f"{len(policy_store.rules)} indexed rules"
+        + (f" · categories: {', '.join(stats.get('categories') or policy_store.categories())}" if policy_store.rules else "")
     )
-    with st.expander("Preview (first indexed clause)"):
-        st.code(policy_store.chunks[0], language=None, wrap_lines=True)
+    if stats:
+        st.caption(
+            f"Last ingest — reused {stats.get('reused', 0)}, "
+            f"reprocessed {stats.get('reprocessed', 0)}, "
+            f"deleted {stats.get('deleted', 0)}"
+        )
+    with st.expander("Preview (first indexed rule)"):
+        preview = policy_store.chunks[0] if policy_store.chunks else "(empty)"
+        st.code(preview, language=None, wrap_lines=True)
 else:
-    st.warning("No policy document found at data/policy.pdf.")
+    st.warning(f"No policy document found at data/{policy_name}.")
 
-uploaded = st.file_uploader("Upload a new policy PDF", type=["pdf"])
+uploaded = st.file_uploader(
+    "Upload a new policy document",
+    type=["pdf", "docx", "md", "txt"],
+    key="policy_upload",
+)
 if uploaded is not None and st.button("Replace policy and re-index", type="primary"):
-    policy_path.write_bytes(uploaded.getvalue())
-    load_everything.clear()  # drop the cached index so the new PDF takes effect now
+    # Keep the uploaded extension so format-aware ingest can run.
+    suffix = Path(uploaded.name).suffix.lower() or ".pdf"
+    new_name = f"policy{suffix}"
+    dest = DATA / new_name
+    raw = uploaded.getvalue()
+    dest.write_bytes(raw)
+    try:
+        from src.storage.factory import get_blob_store
+
+        get_blob_store().put(f"policy/{new_name}", raw)
+    except Exception:
+        pass
+    # Remove previous policy.* siblings so resolve stays unambiguous.
+    for p in DATA.glob("policy.*"):
+        if p.name != new_name:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    save_config({"policy_filename": new_name})
+    load_everything.clear()
     st.success(f"Policy replaced with {uploaded.name} and re-indexed.")
     st.rerun()
+
+st.divider()
+
+# ------------------------------------------------------------- example replies
+st.header("Example replies (production corpus)")
+st.caption(
+    "Past (email → reply) pairs used only for voice/tone retrieval in live drafting. "
+    "They are **not** part of the internal evaluation harness (`dataset.json` corpus/holdout split stays untouched)."
+)
+
+examples = load_user_examples()
+
+bulk = st.file_uploader(
+    "Bulk upload CSV or JSON (`incoming_email`, `actual_reply`, optional `order_id`)",
+    type=["csv", "json"],
+    key="examples_bulk",
+)
+if bulk is not None and st.button("Import examples", type="primary"):
+    try:
+        raw = bulk.getvalue()
+        new_rows = _parse_examples_upload(raw, bulk.name)
+        if not new_rows:
+            st.error("No valid rows found — need non-empty incoming_email and actual_reply.")
+        else:
+            # Assign stable ticket ids for new rows.
+            next_n = len(examples) + 1
+            for row in new_rows:
+                if not row.get("ticket_id"):
+                    row["ticket_id"] = f"U{next_n:03d}"
+                    next_n += 1
+            examples = examples + new_rows
+            save_user_examples(examples)
+            load_everything.clear()
+            st.success(f"Imported {len(new_rows)} example(s). Retriever refreshed.")
+            st.rerun()
+    except Exception as exc:
+        st.error(f"Import failed: {type(exc).__name__}: {exc}")
+
+with st.form("manual_example_form"):
+    st.subheader("Add one example")
+    man_email = st.text_area("Customer email", height=100, key="man_email")
+    man_reply = st.text_area("Agent reply sent", height=100, key="man_reply")
+    man_oid = st.text_input("Order ID (optional)", key="man_oid")
+    if st.form_submit_button("Add example", type="primary"):
+        email_s, reply_s = man_email.strip(), man_reply.strip()
+        if not email_s or not reply_s:
+            st.error("Both customer email and agent reply are required.")
+        else:
+            row = {
+                "ticket_id": f"U{len(examples) + 1:03d}",
+                "incoming_email": email_s,
+                "actual_reply": reply_s,
+            }
+            if man_oid.strip():
+                row["order_id"] = man_oid.strip()
+            examples = examples + [row]
+            save_user_examples(examples)
+            load_everything.clear()
+            st.success("Example added. Retriever refreshed.")
+            st.rerun()
+
+if examples:
+    st.subheader(f"Saved examples ({len(examples)})")
+    for i, row in enumerate(examples):
+        cols = st.columns([3, 3, 1])
+        cols[0].markdown(f"**{row.get('ticket_id', f'#{i+1}')}**")
+        cols[0].caption((row.get("incoming_email") or "")[:120])
+        cols[1].caption((row.get("actual_reply") or "")[:120])
+        if cols[2].button("Delete", key=f"del_ex_{i}"):
+            examples = [e for j, e in enumerate(examples) if j != i]
+            save_user_examples(examples)
+            load_everything.clear()
+            st.rerun()
+else:
+    st.info("No user-supplied examples yet.")
+
+st.divider()
+
+# ------------------------------------------------------------- retrieval
+st.header("Policy retrieval")
+st.caption("Hybrid BM25 + local embeddings with RRF. Cross-encoder rerank is optional (heavier).")
+with st.form("retrieval_form"):
+    use_emb = st.toggle("Use local embeddings", value=bool(cfg.get("use_embeddings", True)))
+    rrf_k = st.number_input("RRF k", min_value=1, max_value=200, value=int(cfg.get("rrf_k", 60)))
+    k_policy = st.number_input("Top-k policy rules", min_value=1, max_value=12, value=int(cfg.get("k_policy", 4)))
+    rerank = st.toggle(
+        "Cross-encoder rerank (optional)",
+        value=bool(cfg.get("cross_encoder_rerank", False)),
+    )
+    llm_chunk = st.toggle(
+        "LLM fallback for unstructured sections",
+        value=bool(cfg.get("policy_llm_chunking", False)),
+    )
+    if st.form_submit_button("Save retrieval settings", type="primary"):
+        save_config(
+            {
+                "use_embeddings": use_emb,
+                "rrf_k": int(rrf_k),
+                "k_policy": int(k_policy),
+                "cross_encoder_rerank": rerank,
+                "policy_llm_chunking": llm_chunk,
+            }
+        )
+        load_everything.clear()
+        st.success("Retrieval settings saved; policy index will rebuild on next load.")
+        st.rerun()
 
 st.divider()
 
@@ -176,6 +369,122 @@ if st.button("Test categorization connection"):
             st.success(f"Connected — categorization {p} ({m}) replied: {out.strip()[:40]}")
         except Exception as exc:
             st.error(f"Categorization connection failed: {type(exc).__name__}: {exc}")
+
+st.divider()
+
+# ------------------------------------------------------------- evaluation gates
+st.header("Evaluation gates")
+st.caption(
+    "RAGAS faithfulness gate and sampling rates for dual-pass disagreement checks "
+    "and AUTO escalation audits. These are product settings, not company facts."
+)
+with st.form("eval_gates_form"):
+    faith_gate = st.slider(
+        "Faithfulness gate (block AUTO below)",
+        0.0, 1.0, float(cfg.get("faithfulness_gate", 0.7)), 0.05,
+    )
+    disagree_rate = st.slider(
+        "Retrieval-disagreement sample rate",
+        0.0, 1.0, float(cfg.get("retrieval_disagreement_sample_rate", 0.1)), 0.05,
+    )
+    audit_rate = st.slider(
+        "AUTO escalation-audit sample rate",
+        0.0, 1.0, float(cfg.get("audit_sample_rate", 0.05)), 0.01,
+    )
+    if st.form_submit_button("Save evaluation gates", type="primary"):
+        save_config({
+            "faithfulness_gate": float(faith_gate),
+            "retrieval_disagreement_sample_rate": float(disagree_rate),
+            "audit_sample_rate": float(audit_rate),
+        })
+        st.success("Evaluation gates saved.")
+        st.rerun()
+
+st.divider()
+
+# -------------------------------------------------------------------- storage
+st.header("Storage")
+st.caption(
+    "Where operational data lives (queue, feedback, RAGAS scores, generated artifacts). "
+    "Default is local — zero setup. Cloud backends are opt-in; secrets go to .env only."
+)
+from src.storage.factory import clear_store_cache, get_blob_store, get_structured_store
+
+with st.form("storage_form"):
+    s_provider = st.selectbox(
+        "Structured store",
+        ["local", "postgres"],
+        index=["local", "postgres"].index(cfg.get("storage_structured_provider", "local")),
+    )
+    b_provider = st.selectbox(
+        "Blob store",
+        ["local", "s3", "azure", "gcs", "postgres"],
+        index=["local", "s3", "azure", "gcs", "postgres"].index(
+            cfg.get("storage_blob_provider", "local")
+            if cfg.get("storage_blob_provider", "local") in ("local", "s3", "azure", "gcs", "postgres")
+            else 0
+        ),
+    )
+    s3_bucket = st.text_input("S3 bucket", value=cfg.get("storage_s3_bucket", ""))
+    s3_endpoint = st.text_input("S3 endpoint URL (optional, for MinIO/R2)", value=cfg.get("storage_s3_endpoint_url", ""))
+    s3_region = st.text_input("S3 region", value=cfg.get("storage_s3_region", ""))
+    azure_container = st.text_input("Azure container", value=cfg.get("storage_azure_container", "app-data"))
+    gcs_bucket = st.text_input("GCS bucket", value=cfg.get("storage_gcs_bucket", ""))
+    pg_dsn = st.text_input("Postgres DSN (leave blank to keep existing)", type="password")
+    s3_key = st.text_input("S3 access key (leave blank to keep existing)", type="password")
+    s3_secret = st.text_input("S3 secret key (leave blank to keep existing)", type="password")
+    azure_cs = st.text_input("Azure connection string (leave blank to keep existing)", type="password")
+    if st.form_submit_button("Save storage settings", type="primary"):
+        save_config({
+            "storage_structured_provider": s_provider,
+            "storage_blob_provider": b_provider,
+            "storage_s3_bucket": s3_bucket.strip(),
+            "storage_s3_endpoint_url": s3_endpoint.strip(),
+            "storage_s3_region": s3_region.strip(),
+            "storage_azure_container": azure_container.strip(),
+            "storage_gcs_bucket": gcs_bucket.strip(),
+        })
+        env_updates: dict[str, str | None] = {
+            "STORAGE_STRUCTURED_PROVIDER": s_provider,
+            "STORAGE_BLOB_PROVIDER": b_provider,
+        }
+        if pg_dsn.strip():
+            env_updates["STORAGE_POSTGRES_DSN"] = pg_dsn.strip()
+        if s3_key.strip():
+            env_updates["STORAGE_S3_ACCESS_KEY"] = s3_key.strip()
+        if s3_secret.strip():
+            env_updates["STORAGE_S3_SECRET_KEY"] = s3_secret.strip()
+        if azure_cs.strip():
+            env_updates["STORAGE_AZURE_CONNECTION_STRING"] = azure_cs.strip()
+        if s3_bucket.strip():
+            env_updates["STORAGE_S3_BUCKET"] = s3_bucket.strip()
+        if gcs_bucket.strip():
+            env_updates["STORAGE_GCS_BUCKET"] = gcs_bucket.strip()
+        update_env(env_updates)
+        clear_store_cache()
+        st.success("Storage settings saved.")
+        st.rerun()
+
+if st.button("Test storage connection"):
+    try:
+        get_structured_store().test_connection()
+        get_blob_store().test_connection()
+        st.success(
+            f"Connected — structured={load_config().get('storage_structured_provider')} · "
+            f"blob={load_config().get('storage_blob_provider')}"
+        )
+    except Exception as exc:
+        st.error(f"Storage connection failed: {type(exc).__name__}: {exc}")
+
+if st.button("Migrate existing local data to configured backend"):
+    try:
+        from src.storage.factory import migrate_local_to
+
+        clear_store_cache()
+        stats = migrate_local_to(get_structured_store(), get_blob_store())
+        st.success(f"Migration complete: {stats}")
+    except Exception as exc:
+        st.error(f"Migration failed: {type(exc).__name__}: {exc}")
 
 st.divider()
 

@@ -1,52 +1,34 @@
 [
   {
     "ticket_id": "H01",
+    "response_id": "H01-8f0d2522be46",
     "reply_source": "generated",
     "category": "return_in_window",
-    "judge_policy_requires": "A return requested within 30 days of the delivery date, where the item is unworn and in original condition, must be granted a full refund to the original payment method.",
-    "judge_cited_rule": "R1.1",
-    "judge_reply_offers": "A full refund to the original payment method.",
-    "compliance_match_score": 5,
-    "compliance_justification": "The transaction occurred on 2026-06-27, and the request was made on 2026-07-07, which is within 30 days of delivery. The item is unworn and in original condition (tags attached), so a full refund is required per R1.1. The reply correctly offers a full refund to the original payment method without any escalation or omission.",
-    "alignment": 5,
-    "alignment_justification": "The generated reply conveys the same key information and resolution as the actual reply: acknowledgment of the wrong color received, confirmation of eligibility for a full refund, processing of the refund, and mention of the tags still being on. Both replies offer the option to reorder the correct item, though the generated reply does not explicitly state this as clearly as the ground truth.",
-    "groundedness": 5,
-    "tone_empathy": 5,
-    "clarity": 4,
-    "actionability": 4,
-    "quality_justification": "The generated reply is well-structured and empathetic, matching the tone of the ground truth. It clearly explains the refund process and timeline, though it could be slightly more explicit about the option to reorder the correct item (as the ground truth includes). The clarity is high, but the actionability is slightly reduced because the generated reply does not explicitly state that a prepaid return label is included (though it mentions no return shipping is needed, which implies it). The groundedness is perfect, as it sticks to the facts provided in the email.",
+    "faithfulness": 0.73,
+    "answer_relevancy": 0.84,
+    "context_precision": 0.8,
+    "quality_score": 0.777,
+    "faithfulness_details": {
+      "unsupported_claims": [],
+      "note": "mock ragas scores (no API / offline)",
+      "n_contexts": 4
+    },
+    "disagreement_checked": false,
+    "retrieval_disagreement": null,
+    "topk_rule": "R7",
+    "full_doc_rule": "",
+    "gated_from_auto": false,
+    "scoring_error": "",
     "deterministic_penalty": 0,
     "flags": [],
-    "lexical_overlap": 0.1193,
-    "policy_score": 100.0,
-    "alignment_score": 100.0,
-    "quality_score": 90.0,
-    "final_score": 97.0
-  },
-  {
-    "ticket_id": "H01",
-    "reply_source": "control",
-    "category": "return_in_window",
-    "judge_policy_requires": "A full refund to the original payment method must be granted for the unworn, in original condition return requested within 30 days of delivery.",
-    "judge_cited_rule": "R1.1",
-    "judge_reply_offers": "No specific remedy is offered; the reply is a generic acknowledgment without addressing the return or refund.",
-    "compliance_match_score": 1,
-    "compliance_justification": "The policy requires a full refund for a qualifying return within 30 days, but the reply fails to offer any remedy, effectively denying the owed refund.",
-    "alignment": 1,
-    "alignment_justification": "The generated reply does not address the customer's specific issue (wrong color vest, refund request) or provide any resolution. It is generic and fails to convey the same key information or outcome as the actual reply.",
-    "groundedness": 3,
-    "tone_empathy": 1,
-    "clarity": 2,
-    "actionability": 1,
-    "quality_justification": "The generated reply is overly generic, lacks empathy for the frustrated customer, and does not provide any actionable steps or resolution. It fails to address the core issue and offers no concrete next steps, making it ineffective for the customer's needs.",
-    "deterministic_penalty": 4,
-    "flags": [
-      "order_id_not_referenced (-4)"
-    ],
-    "lexical_overlap": 0.0261,
-    "policy_score": 20.0,
-    "alignment_score": 20.0,
-    "quality_score": 34.0,
-    "final_score": 20.2
+    "lexical_overlap": 0.06103286384976526,
+    "remedy": {
+      "remedy_type": "refund",
+      "remedy_amount": null,
+      "rule_cited": "R7",
+      "escalate": false
+    },
+    "escalate": false,
+    "escalate_reason": ""
   }
 ]
