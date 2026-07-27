@@ -18,3 +18,4 @@ __pycache__/
 .venv/
 .DS_Store
 policy_index/
+AGENT.md

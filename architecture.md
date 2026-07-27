@@ -154,6 +154,7 @@ Tables (local files under `results/`): `queue`, `event_bus`, `feedback_events`,
 | `src/queue_store.py` | Review queue |
 | `src/feedback.py` | Review labels → `feedback_events` |
 | `src/reliability.py` | Rates + Wilson CIs + calibration |
+| `src/validate_metric.py` | `build_reliability_report()` — reliability entrypoint used by `api.py` |
 | `src/storage/` | Pluggable StructuredStore + BlobStore |
 | `pipeline.py` | Batch CLI |
 | `api.py` | FastAPI JSON wrapper over `src/`; serves `web/dist` + SPA fallback |

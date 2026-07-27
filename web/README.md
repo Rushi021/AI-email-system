@@ -1,8 +1,9 @@
 # Web frontend (React) — Nike-bold "broadcast" UI
 
-React + Vite replacement for the Streamlit UI. Same 5 pages (Assistant, Inbox,
-Review, Settings, Evaluation), backed by a thin FastAPI layer (`../api.py`) that
-reuses `src/` — no company facts live in the frontend or the API.
+React + Vite frontend. Five pages (Assistant, Inbox, Review, Settings,
+Evaluation), backed by a thin FastAPI layer (`../api.py`) that reuses `src/` — no
+company facts live in the frontend or the API. This is the only UI; there is no
+Streamlit app.
 
 ## Run (development, two processes)
 
@@ -22,8 +23,12 @@ cd web && npm run build      # emits web/dist
 ```
 
 FastAPI serves `web/dist` when it exists (with SPA fallback for deep links); the
-Vite dev server is only for hot-reload development. The old Streamlit app
-(`streamlit run app.py`) still works and shares the same backend data.
+Vite dev server is only for hot-reload development.
+
+The Assistant and Inbox pages need an LLM key (set one in `.env` or on the
+Settings page) to generate; the read-only pages (Review, Evaluation) work without
+one. The `demo` email source is an empty offline inbox — point `email_source` at
+`mcp` (Settings) to fetch real mail.
 
 ## Design
 
