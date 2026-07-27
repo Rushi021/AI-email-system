@@ -24,20 +24,25 @@ or prompts — all company facts are injected at runtime from `data/`.
 ## Architecture
 
 ```
-incoming email ─► PolicyStore (format-aware ingest + BM25/embeddings/RRF)
-                  src/policy_ingest.py + src/policy_store.py
-                  cache via BlobStore: policy_index/*
-             ─► intent scope (dynamic categories from loaded policy)  src/intent.py
-             ─► TicketRetriever (TF-IDF; dataset corpus + user_examples)
-             ─► Transaction lookup                       data/transactions.json
-             ─► generator (reply + cited_rules + structured remedy)
-                  src/generator.py + src/prompts.py
-             ─► RAGAS evaluator (faithfulness / relevancy / context precision)
-                  src/ragas_evaluator.py + src/evaluator.py
-                  + sampled dual-pass retrieval disagreement
-                  + deterministic diagnostics (non-blended)
-             ─► router (AUTO gated by faithfulness + disagreement)
-             ─► feedback_events (Review actions) → src/reliability.py
+incoming email
+      │
+      ├─► PolicyStore — format-aware ingest + hybrid retrieve (BM25 + embeddings + RRF)
+      │                 src/policy_ingest.py + src/policy_store.py
+      │                 cache via BlobStore: policy_index/*
+      ├─► intent scope — categories from the loaded policy  src/intent.py
+      ├─► TicketRetriever — TF-IDF (dataset corpus + user_examples)
+      └─► transaction lookup — data/transactions.json
+      ▼
+   generator ──► reply + cited_rules + structured remedy
+      ▼
+   RAGAS evaluator ──► faithfulness · relevancy · context precision
+                       + dual-pass disagreement + deterministic diagnostics
+                       ──► ragas_scores (StructuredStore)
+      ▼
+   router ──► AUTO / REVIEW / ESCALATE / IGNORE
+              hard gate: faithfulness < gate OR disagreement OR scoring error → never AUTO
+      ▼
+   queue ──► Review dashboard ──► feedback_events ──► reliability
 pipeline.py = batch CLI · app.py + views/ = Streamlit UI
 src/storage/ = pluggable StructuredStore + BlobStore (default local)
 ```

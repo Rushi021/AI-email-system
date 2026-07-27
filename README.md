@@ -32,23 +32,32 @@ No API key yet? The app still opens — configure a provider on the Settings pag
 then use the Assistant.
 
 ```
-incoming email ──► format-aware policy ingest + hybrid retrieve (BM25 + embeddings + RRF)
-      │       ──► TF-IDF retrieve similar past tickets (dataset corpus + user_examples)
-      │       ──► transaction record lookup (data/transactions.json)
+incoming email
+      │
+      ├─► PolicyStore — format-aware ingest + hybrid retrieve (BM25 + embeddings + RRF)
+      │                 cache via BlobStore (policy_index/*)
+      ├─► intent scope — categories from the loaded policy
+      ├─► TicketRetriever — TF-IDF (dataset corpus + user_examples)
+      └─► transaction lookup — data/transactions.json
       ▼
-   LLM generator ──► suggested reply + cited rules + structured remedy
+   generator ──► reply + cited_rules + structured remedy
       ▼
    RAGAS evaluator ──► faithfulness · answer relevancy · context precision
                        + dual-pass retrieval disagreement (sampled)
                        + deterministic diagnostics (non-blended)
+                       ──► ragas_scores (StructuredStore)
       ▼
    router ──► AUTO / REVIEW / ESCALATE / IGNORE
-              (hard gate: faithfulness < gate OR disagreement → never AUTO)
+              hard gate: faithfulness < gate OR disagreement OR scoring error → never AUTO
       ▼
-   Review dashboard ──► human feedback_events
-      ▼
-   reliability ──► critical_error_rate · reliability_rate · calibration
-                   (every rate carries n + Wilson CI)
+   queue (StructuredStore) ──► Review dashboard
+                                  │  Send / edit / dismiss / flag hallucination / audit
+                                  ▼
+                             feedback_events ──► reliability
+                                                 critical_error_rate · reliability_rate
+                                                 calibration (every rate: n + Wilson CI)
+
+Storage (pluggable): StructuredStore + BlobStore — default local; opt-in Postgres / S3 / Azure / GCS
 ```
 
 ## 1. Quick start (batch pipeline)
@@ -229,61 +238,64 @@ inbox (MCP email server | built-in demo)  ── src/email_source.py ──► I
    src/email_parser.py   strip HTML/quoted-history/signatures, normalize whitespace,
         │                surface SPF/DKIM/DMARC when the connector supplies headers
         ▼
-   src/event_bus.py (SQLite)   publish → drain(): each email isolated in its own
-        │                      try/except — retry ×3, else dead-letter. One bad
-        │                      email can't block the rest of a sync.
+   src/event_bus.py      StructuredStore table "event_bus" — publish → drain():
+        │                each email isolated; retry ×3, else dead-letter
         ▼
    src/classifier.py   LLM categorizes into refund / cancellation / complain /
-        │               billing / technical_support / general_inquiry / other (noise);
-        │               frustration stays a cheap regex for priority only
+        │               billing / technical_support / general_inquiry / other (noise)
         ▼
-   src/router.py   reuses generate_reply + evaluate_reply, unchanged
-        │   AUTO      confident + policy-clean + a rule was cited, and policy does not mandate a human
-        │   REVIEW    decent draft, not confident enough → queued for a human to approve/edit
-        │   ESCALATE  the compliance judge says the policy requires a human, or confidence < T2
-        │   IGNORE    category is other (noise) — no generation/eval LLM spent
+   src/router.py   generate_reply → RAGAS evaluate → decide
+        │   AUTO      quality_score high + faithfulness gate pass + no disagreement
+        │   REVIEW    mid confidence, gated from AUTO, or deterministic flags
+        │   ESCALATE  remedy.escalate from generator, or confidence < T2
+        │   IGNORE    category is other (noise) — no generation/eval spent
         ▼
-   src/queue_store.py (SQLite)  ── priority-sorted queue ──►  🗂️ Review dashboard
+   src/queue_store.py (StructuredStore "queue") ──► 🗂️ Review dashboard
+        │                                            feedback_events on every action
         └── src/notify.py  ── email digest of pending items via the same connector
 ```
 
-- **Live confidence.** A live email has no human reply to align against, so alignment is dropped and
-  confidence is renormalized over compliance + quality minus deterministic penalties. Auto-reply
-  additionally requires zero flags, a cited rule, and no policy-mandated escalation.
-- **Escalation stays company-agnostic.** The compliance judge emits a boolean `escalate` +
-  `escalate_reason` **read from the policy document** — the router never hardcodes a rule id. Swap
-  the policy PDF and escalation behavior changes with it.
+- **Live confidence** = `quality_score × 100 − deterministic penalty` (0–100). AUTO is blocked when
+  faithfulness is below the gate, retrieval disagreement is true, scoring failed, or
+  deterministic flags fire.
+- **Escalation stays company-agnostic.** The generator's structured `remedy.escalate` is derived
+  from the policy text — the router never hardcodes a rule id. Swap the policy document and
+  escalation behavior changes with it.
 - **Email connector.** One pluggable interface (mirroring `llm_client`). `demo` runs fully offline
   from `data/demo_inbox.json`; `mcp` makes the app an **MCP client** to a Gmail (or any) MCP server —
-  server URL + token in Settings, tools auto-mapped by capability. Configured per deployment in the
-  Settings dashboard, exactly like the LLM provider.
-- **Dry-run by default.** Nothing is actually sent until the **live-send** switch is on; until then
-  auto-replies are queued as pre-approved drafts and "Send" simulates. Every threshold, connector,
-  and notification setting is changed from Settings — no code edits to adapt the system to a new company.
+  server URL + token in Settings, tools auto-mapped by capability.
+- **Dry-run by default.** Nothing is actually sent until the **live-send** switch is on. Thresholds,
+  evaluation gates, storage backends, and notifications are all changed from Settings.
 
 ## 7. Repo map
 
 ```
 scripts/build_policy_pdf.py   renders the policy text into data/policy.pdf (one-time)
 data/                         ALL company-specific inputs (swap these for a new company)
-data/demo_inbox.json          offline demo inbox (live inbound emails, no human replies)
-src/policy_store.py           generic PDF → chunks → TF-IDF retrieval
-src/retriever.py              TF-IDF retrieval over past-ticket corpus (corpus split only)
-src/generator.py              policy + precedent → suggested reply
-src/evaluator.py              3-layer accuracy system (the core of the submission)
-src/validate_metric.py        the three validation checks
-src/email_source.py           pluggable inbox connector (demo | mcp), one interface
-src/email_parser.py           normalize a fetched email (strip HTML/quotes, auth signal)
-src/event_bus.py              SQLite ingestion queue (results/event_bus.db) — isolates failures
-src/classifier.py             LLM categorization (7 categories) + frustration regex
-src/router.py                 routing engine: email → AUTO / REVIEW / ESCALATE / IGNORE
-src/queue_store.py            SQLite review/action queue (results/queue.db)
-src/notify.py                 email digest of pending review + escalation items
-src/config.py                 non-secret runtime config (config.json): thresholds, source, digest
+data/demo_inbox.json          offline demo inbox
+src/policy_ingest.py          PDF/DOCX/Markdown/txt → sections
+src/policy_store.py           hybrid BM25 + embeddings + RRF (BlobStore index cache)
+src/intent.py                 retrieval intent scoping from loaded policy categories
+src/retriever.py              TF-IDF over past-ticket corpus (+ user_examples in live UI)
+src/generator.py              policy + precedent → reply + cited_rules + remedy
+src/ragas_evaluator.py        Tier-1 faithfulness / relevancy / context precision + disagreement
+src/evaluator.py              RAGAS orchestration + deterministic diagnostics
+src/reliability.py            Tier-2 rates (Wilson CI) + calibration
+src/feedback.py               Review-action labels → feedback_events
+src/validate_metric.py        reliability report from feedback_events
+src/storage/                  pluggable StructuredStore + BlobStore (local default)
+src/email_source.py           pluggable inbox connector (demo | mcp)
+src/email_parser.py           normalize a fetched email
+src/event_bus.py              ingestion queue via StructuredStore
+src/classifier.py             LLM categorization (7 categories)
+src/router.py                 email → AUTO / REVIEW / ESCALATE / IGNORE
+src/queue_store.py            review queue via StructuredStore
+src/notify.py                 email digest of pending items
+src/config.py                 non-secret runtime config (config.json)
 pipeline.py                   batch CLI: --all | --generate | --evaluate | --validate
-app.py                        Streamlit entrypoint (st.navigation over views/)
-views/                        Assistant · Inbox · Review · Settings · Evaluation (internal)
-results/                      generated_replies / evaluation_results / validation_report / queue.db / event_bus.db
+app.py                        Streamlit entrypoint
+views/                        Assistant · Inbox · Review · Settings · Evaluation
+results/                      generated artifacts + local SQLite / index cache (gitignored DBs)
 ```
 
 ## 8. Future implementation — from assistant to autonomous support layer
@@ -312,13 +324,14 @@ Router ──────────────┬─────────�
       │              │                 high-value, legal,
       │              │                 repeat contact)
       ▼              ▼                      ▼
- RAG generator ──► evaluator gate (same 3-layer metric, online) ──► send / queue
+ RAG generator ──► RAGAS gate (faithfulness + disagreement) ──► send / queue
       ▲                                                              │
-      └────────── learning loop: agent edits, outcomes, CSAT ◄───────┘
+      └────────── learning loop: agent edits → feedback_events ◄─────┘
 ```
 
 The generator and evaluator in the middle are **exactly the modules in this repo** —
-`src/generator.py` and `src/evaluator.py` — promoted from batch tools to online services.
+`src/generator.py`, `src/ragas_evaluator.py`, and `src/evaluator.py` — promoted from batch
+tools to online services.
 
 ### Roadmap
 
