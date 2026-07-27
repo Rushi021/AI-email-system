@@ -36,13 +36,12 @@ export default function Inbox() {
 
   return (
     <PageFade>
-      <Masthead index="02 / Intake" eyebrow="Route every message" title="Inbox">
-        Fetch unread mail from the connected source, route each message through the pipeline,
-        and drop the results into the review queue. Each email costs 2 LLM calls.
+      <Masthead index="02 / Intake" eyebrow="Bring mail in" title="Inbox">
+        Sync unread mail from your connected source, or paste one email. Each message is classified and queued for review.
       </Masthead>
 
       <div className="panel">
-        <div className="panel-title">Sync inbox <span className="kbd">{config?.email_source || "—"}</span></div>
+        <div className="panel-title">Sync inbox <span className="kbd">{config?.email_source || "n/a"}</span></div>
         <p className="panel-note">
           Auto-send is <b>{config?.live_send ? "LIVE" : "dry-run"}</b> · thresholds T1={config?.t1} / T2={config?.t2}.
           Change these in Settings.
@@ -106,8 +105,8 @@ export default function Inbox() {
           </div>
           {routed.judge && Object.keys(routed.judge).length > 0 && (
             <dl className="kv">
-              <dt>Cited rule</dt><dd>{routed.judge.cited_rule || "—"}</dd>
-              <dt>Escalate</dt><dd>{String(routed.judge.escalate)} — {routed.judge.escalate_reason || "n/a"}</dd>
+              <dt>Cited rule</dt><dd>{routed.judge.cited_rule || "n/a"}</dd>
+              <dt>Escalate</dt><dd>{String(routed.judge.escalate)}{routed.judge.escalate_reason ? `: ${routed.judge.escalate_reason}` : ""}</dd>
               <dt>Flags</dt><dd>{routed.flags?.join(", ") || "none"}</dd>
             </dl>
           )}
@@ -117,7 +116,7 @@ export default function Inbox() {
               <div className="reply-block">{routed.suggested_reply}</div>
             </>
           )}
-          <p className="panel-note" style={{ marginTop: 14 }}>Queued — manage it on the Review page.</p>
+          <p className="panel-note" style={{ marginTop: 14 }}>Queued. Open Review to manage it.</p>
         </motion.div>
       )}
     </PageFade>

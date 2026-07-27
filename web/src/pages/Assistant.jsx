@@ -54,9 +54,8 @@ export default function Assistant() {
 
   return (
     <PageFade>
-      <Masthead index="01 / Draft" eyebrow="Grounded reply drafting" title="Reply Assistant">
-        Paste an incoming customer email and get a suggested reply, grounded in your policy
-        rules and past tickets — then score it on demand.
+      <Masthead index="01 / Draft" eyebrow="Draft a reply" title="Reply Assistant">
+        Paste a customer email to get a suggested reply grounded in your policy and past tickets. You can score it when you want.
       </Masthead>
 
       <div className="panel">
@@ -74,13 +73,13 @@ export default function Assistant() {
             <option value="">Continue without a transaction record</option>
             {orders.map((o) => (
               <option key={o.order_id} value={o.order_id}>
-                {o.order_id} — {o.product} (${o.price})
+                {o.order_id} · {o.product} (${o.price})
               </option>
             ))}
           </select>
         </Field>
         {result?.detected_order_id && (
-          <Alert kind="info">Order <b className="mono">{result.detected_order_id}</b> detected in the email — its transaction record is used.</Alert>
+          <Alert kind="info">Order <b className="mono">{result.detected_order_id}</b> was found in the email. Its transaction record is being used.</Alert>
         )}
         <div className="btn-row">
           <button className="btn primary" onClick={suggest} disabled={!email.trim() || busy}>
@@ -96,20 +95,19 @@ export default function Assistant() {
           <div className="panel">
             <div className="reply-block">{gen.reply}</div>
             <dl className="kv">
-              <dt>Remedy</dt><dd>{rem.remedy_type || "—"}</dd>
-              <dt>Amount</dt><dd>{rem.remedy_amount ?? "—"}</dd>
-              <dt>Rule</dt><dd>{rem.rule_cited || "—"}</dd>
+              <dt>Remedy</dt><dd>{rem.remedy_type || "n/a"}</dd>
+              <dt>Amount</dt><dd>{rem.remedy_amount ?? "n/a"}</dd>
+              <dt>Rule</dt><dd>{rem.rule_cited || "n/a"}</dd>
               <dt>Escalate</dt><dd>{String(rem.escalate)}</dd>
             </dl>
           </div>
 
-          <div className="section-eyebrow">Response quality — RAGAS</div>
+          <div className="section-eyebrow">Response quality (RAGAS)</div>
           <div className="panel">
             {!evalRes ? (
               <>
                 <p className="panel-note">
-                  Scores faithfulness, answer relevancy, and context precision against the retrieved
-                  policy chunks — reference-free. Runs only when you ask.
+                  Checks faithfulness, answer relevancy, and context precision against the policy chunks used for this reply. Runs only when you ask.
                 </p>
                 <button className="btn accent" onClick={checkAccuracy} disabled={evalBusy}>
                   {evalBusy ? <><Spinner /> Scoring…</> : "Check accuracy"}

@@ -53,15 +53,14 @@ export default function Settings() {
   // -------- LLM step form state
   return (
     <PageFade>
-      <Masthead index="04 / Configure" eyebrow="Swap the data, keep the code" title="Settings">
-        Everything company-specific is a swappable file. These controls tune the product —
-        thresholds, models, retrieval, storage — never company facts.
+      <Masthead index="04 / Configure" eyebrow="App configuration" title="Settings">
+        Upload your policy, pick models, and set routing thresholds. Company data stays in the files you provide.
       </Masthead>
 
       {flash && <Alert kind="ok">{flash}</Alert>}
       {error && <Alert kind="err">{error}</Alert>}
 
-      <Section title="Policy document" note={`Loaded: ${data.policy.filename} · ${data.policy.rules} indexed rules · categories: ${data.policy.categories.join(", ") || "—"}`}>
+      <Section title="Policy document" note={`Loaded: ${data.policy.filename} · ${data.policy.rules} indexed rules · categories: ${data.policy.categories.join(", ") || "none"}`}>
         {data.policy.preview && <div className="email-block" style={{ marginBottom: 14 }}>{data.policy.preview.slice(0, 600)}</div>}
         <input ref={fileRef} type="file" accept=".pdf,.docx,.md,.txt" style={{ marginBottom: 12 }} />
         <div>
@@ -76,7 +75,7 @@ export default function Settings() {
 
       <ExampleReplies data={data} onSave={(rows) => run("examples", () => api.post("/settings/examples", { examples: rows }), "Examples saved.")} busy={busy === "examples"} />
 
-      <Section title="Policy retrieval" note="Hybrid BM25 + local embeddings with RRF. Cross-encoder rerank is optional and heavier.">
+      <Section title="Policy retrieval" note="How policy rules are found for each email. Cross-encoder rerank is optional and slower.">
         <label className="field"><Toggle checked={!!cfg.use_embeddings} onChange={(v) => set("use_embeddings", v)} label="Use local embeddings" /></label>
         <div className="row">
           <Field label="RRF k"><input type="number" value={cfg.rrf_k} onChange={(e) => set("rrf_k", Number(e.target.value))} style={{ width: 120 }} /></Field>
@@ -89,20 +88,20 @@ export default function Settings() {
 
       <LLMSection data={data} run={run} busy={busy} />
 
-      <Section title="Evaluation gates" note="RAGAS faithfulness gate and sampling rates. Product settings, not company facts.">
-        <Field label={`Faithfulness gate (block AUTO below) — ${Number(cfg.faithfulness_gate).toFixed(2)}`}>
+      <Section title="Evaluation gates" note="Controls when a reply can go AUTO. Lower faithfulness blocks auto-send.">
+        <Field label={`Faithfulness gate (block AUTO below): ${Number(cfg.faithfulness_gate).toFixed(2)}`}>
           <input type="range" min={0} max={1} step={0.05} value={cfg.faithfulness_gate} onChange={(e) => set("faithfulness_gate", Number(e.target.value))} />
         </Field>
-        <Field label={`Retrieval-disagreement sample rate — ${Number(cfg.retrieval_disagreement_sample_rate).toFixed(2)}`}>
+        <Field label={`Disagreement check sample rate: ${Number(cfg.retrieval_disagreement_sample_rate).toFixed(2)}`}>
           <input type="range" min={0} max={1} step={0.05} value={cfg.retrieval_disagreement_sample_rate} onChange={(e) => set("retrieval_disagreement_sample_rate", Number(e.target.value))} />
         </Field>
-        <Field label={`AUTO escalation-audit sample rate — ${Number(cfg.audit_sample_rate).toFixed(2)}`}>
+        <Field label={`AUTO audit sample rate: ${Number(cfg.audit_sample_rate).toFixed(2)}`}>
           <input type="range" min={0} max={1} step={0.01} value={cfg.audit_sample_rate} onChange={(e) => set("audit_sample_rate", Number(e.target.value))} />
         </Field>
         <SaveBtn busy={busy === "gates"} onClick={() => saveConfig(["faithfulness_gate", "retrieval_disagreement_sample_rate", "audit_sample_rate"], "gates")}>Save evaluation gates</SaveBtn>
       </Section>
 
-      <Section title="Email connection" note="demo uses the built-in offline inbox; mcp connects to a Gmail (or any) MCP server.">
+      <Section title="Email connection" note="Use demo for the built-in sample inbox, or mcp to connect a live mailbox.">
         <Field label="Email source">
           <select value={cfg.email_source} onChange={(e) => set("email_source", e.target.value)}>
             <option value="demo">demo</option><option value="mcp">mcp</option>
@@ -111,16 +110,16 @@ export default function Settings() {
         <div className="btn-row">
           <SaveBtn busy={busy === "email"} onClick={() => saveConfig(["email_source"], "email")}>Save email source</SaveBtn>
           <button className="btn ghost" disabled={busy === "test-inbox"} onClick={() => run("test-inbox", async () => {
-            const r = await api.post("/settings/test/inbox"); setFlash((r.ok ? "Inbox OK — " : "Inbox failed — ") + r.detail);
+            const r = await api.post("/settings/test/inbox"); setFlash((r.ok ? "Inbox OK: " : "Inbox failed: ") + r.detail);
           })}>{busy === "test-inbox" ? <Spinner dark /> : "Test inbox connection"}</button>
         </div>
       </Section>
 
-      <Section title="Automation thresholds" note="Confidence is the live routing score (0–100). ≥ T1 (and clean) auto-sends; < T2 escalates; between queues for review.">
-        <Field label={`T1 — auto-reply at or above: ${Math.round(cfg.t1)}`}>
+      <Section title="Automation thresholds" note="Confidence is 0 to 100. At or above T1 can go AUTO. Below T2 escalates. In between, it goes to review.">
+        <Field label={`T1 (auto-reply at or above): ${Math.round(cfg.t1)}`}>
           <input type="range" min={0} max={100} value={cfg.t1} onChange={(e) => set("t1", Number(e.target.value))} />
         </Field>
-        <Field label={`T2 — escalate below: ${Math.round(cfg.t2)}`}>
+        <Field label={`T2 (escalate below): ${Math.round(cfg.t2)}`}>
           <input type="range" min={0} max={100} value={cfg.t2} onChange={(e) => set("t2", Number(e.target.value))} />
         </Field>
         <label className="field"><Toggle checked={!!cfg.live_send} onChange={(v) => set("live_send", v)} label="Live send (actually dispatch auto-replies)" /></label>
@@ -130,7 +129,7 @@ export default function Settings() {
         }}>Save automation settings</SaveBtn>
       </Section>
 
-      <Section title="Notifications" note="The review badge is always on. Optionally email a digest of pending items after each sync.">
+      <Section title="Notifications" note="Optionally email a digest of pending review items after each sync.">
         <label className="field"><Toggle checked={!!cfg.digest_enabled} onChange={(v) => set("digest_enabled", v)} label="Email a digest after each inbox sync" /></label>
         <Field label="Digest recipient email"><input type="email" value={cfg.digest_recipient || ""} onChange={(e) => set("digest_recipient", e.target.value)} /></Field>
         <div className="btn-row">
@@ -158,7 +157,7 @@ function LLMSection({ data, run, busy }) {
   useEffect(() => { setProvider(cur.provider); setModel(cur.model); setKey(""); }, [step]); // eslint-disable-line
 
   return (
-    <Section title="LLM models by pipeline step" note="Generation drafts replies (and runs judges); categorization triages inbound mail. Keys are stored per provider; leave blank to keep the existing one.">
+    <Section title="LLM models" note="Generation drafts replies and scores them. Categorization sorts inbound mail. Leave the API key blank to keep the one you already saved.">
       <div className="tabs" style={{ marginBottom: 18 }}>
         <button className={"tab" + (step === "generate" ? " active" : "")} onClick={() => setStep("generate")}>Email generation</button>
         <button className={"tab" + (step === "classify" ? " active" : "")} onClick={() => setStep("classify")}>Email categorization</button>
@@ -176,7 +175,7 @@ function LLMSection({ data, run, busy }) {
       <Field label="Model (blank = provider default)"><input type="text" value={model} onChange={(e) => setModel(e.target.value)} placeholder={data.llm.default_models?.[provider] || ""} /></Field>
       <Field label="API key (blank keeps existing)"><input type="password" value={key} onChange={(e) => setKey(e.target.value)} /></Field>
       <div className="btn-row">
-        <button className="btn accent" disabled={busy === "llm"} onClick={() => run("llm", () => api.post("/settings/llm", { step, provider, model, api_key: key }), `Saved — ${step} uses ${provider}.`)}>
+        <button className="btn accent" disabled={busy === "llm"} onClick={() => run("llm", () => api.post("/settings/llm", { step, provider, model, api_key: key }), `Saved. ${step} now uses ${provider}.`)}>
           {busy === "llm" ? <Spinner /> : "Save model"}
         </button>
         <button className="btn ghost" disabled={busy === "test-llm"} onClick={() => run("test-llm", async () => {
@@ -202,7 +201,7 @@ function ExampleReplies({ data, onSave, busy }) {
   function del(i) { const next = rows.filter((_, j) => j !== i); setRows(next); onSave(next); }
 
   return (
-    <Section title="Example replies (production corpus)" note="Past (email → reply) pairs used only for voice/tone retrieval in live drafting. Not part of the evaluation harness.">
+    <Section title="Example replies" note="Past email and reply pairs used to match your writing style. They are not used in batch evaluation.">
       <Field label="Customer email"><textarea rows={3} value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
       <Field label="Agent reply sent"><textarea rows={3} value={reply} onChange={(e) => setReply(e.target.value)} /></Field>
       <div className="row">
@@ -229,7 +228,7 @@ function StorageSection({ cfg, set, saveConfig, run, busy, setFlash }) {
   const [secrets, setSecrets] = useState({});
   const ss = (k, v) => setSecrets((s) => ({ ...s, [k]: v }));
   return (
-    <Section title="Storage" note="Where operational data lives (queue, feedback, scores, artifacts). Default is local — zero setup. Cloud backends are opt-in; secrets go to .env only.">
+    <Section title="Storage" note="Where queue, feedback, and scores are stored. Local needs no setup. Cloud options are optional; secrets stay in .env.">
       <div className="row">
         <Field label="Structured store">
           <select value={cfg.storage_structured_provider} onChange={(e) => set("storage_structured_provider", e.target.value)}>
@@ -256,7 +255,7 @@ function StorageSection({ cfg, set, saveConfig, run, busy, setFlash }) {
           await api.post("/settings/env", { updates: env });
         }, "Storage settings saved.")}>{busy === "storage" ? <Spinner /> : "Save storage settings"}</button>
         <button className="btn ghost" disabled={busy === "test-storage"} onClick={() => run("test-storage", async () => {
-          const r = await api.post("/settings/test/storage"); setFlash((r.ok ? "Storage OK — " : "Storage failed — ") + r.detail);
+          const r = await api.post("/settings/test/storage"); setFlash((r.ok ? "Storage OK: " : "Storage failed: ") + r.detail);
         })}>{busy === "test-storage" ? <Spinner dark /> : "Test storage connection"}</button>
       </div>
     </Section>

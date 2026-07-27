@@ -16,7 +16,7 @@ const NAV = [
   { to: "/evaluation", num: "05", label: "Evaluation", el: Evaluation },
 ];
 
-// Shared bootstrap (orders, config, queue counts) — refreshable from any page.
+// Shared bootstrap (orders, config, queue counts). Refreshable from any page.
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
 
@@ -40,7 +40,7 @@ function Ticker({ counts, config }) {
       )}
       {[0, 1].map((dup) => (
         <span className="ticker-item" key={`s-${dup}`}>
-          Source <b>{config?.email_source ?? "—"}</b>
+          Source <b>{config?.email_source ?? "n/a"}</b>
           <span className="ticker-sep">/</span> Auto-send <b>{send}</b>
           <span className="ticker-sep">/</span> Thresholds <b>T1 {config?.t1} · T2 {config?.t2}</b>
           <span className="ticker-sep">//</span>
@@ -96,7 +96,7 @@ export default function App() {
               <span className={"live-dot" + (boot.config?.live_send ? "" : " dry")} />
               {boot.config?.live_send ? "LIVE SEND" : "DRY-RUN"}
             </span>
-            <span>SRC · {boot.config?.email_source ?? "—"}</span>
+            <span>SRC · {boot.config?.email_source ?? "n/a"}</span>
           </div>
         </aside>
 

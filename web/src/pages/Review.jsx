@@ -8,10 +8,10 @@ function Ragas({ ragas, flags }) {
   if (!ragas || Object.keys(ragas).length === 0) return null;
   return (
     <dl className="kv">
-      <dt>Faithfulness</dt><dd>{ragas.faithfulness ?? "—"}</dd>
-      <dt>Answer relevancy</dt><dd>{ragas.answer_relevancy ?? "—"}</dd>
-      <dt>Context precision</dt><dd>{ragas.context_precision ?? "—"}</dd>
-      <dt>Quality score</dt><dd>{ragas.quality_score ?? "—"}</dd>
+      <dt>Faithfulness</dt><dd>{ragas.faithfulness ?? "n/a"}</dd>
+      <dt>Answer relevancy</dt><dd>{ragas.answer_relevancy ?? "n/a"}</dd>
+      <dt>Context precision</dt><dd>{ragas.context_precision ?? "n/a"}</dd>
+      <dt>Quality score</dt><dd>{ragas.quality_score ?? "n/a"}</dd>
       <dt>Disagreement</dt><dd>{String(ragas.retrieval_disagreement)} (checked={String(ragas.disagreement_checked)})</dd>
       <dt>Flags</dt><dd>{flags?.join(", ") || "none"}</dd>
     </dl>
@@ -55,7 +55,7 @@ function Card({ it, audit, live, onAction }) {
           >
             <div style={{ paddingTop: 16 }}>
               <div className="field-label">From</div>
-              <div className="mono" style={{ marginBottom: 10 }}>{it.from_addr || "—"}</div>
+              <div className="mono" style={{ marginBottom: 10 }}>{it.from_addr || "n/a"}</div>
               <div className="email-block">{it.body}</div>
               <Ragas ragas={it.ragas} flags={it.flags} />
 
@@ -97,7 +97,7 @@ function Card({ it, audit, live, onAction }) {
                   )}
                 </div>
               ) : (
-                <p className="panel-note" style={{ marginTop: 12 }}>Closed — {it.status}.</p>
+                <p className="panel-note" style={{ marginTop: 12 }}>Closed ({it.status}).</p>
               )}
             </div>
           </motion.div>
@@ -154,9 +154,9 @@ export default function Review() {
 
   return (
     <PageFade>
-      <Masthead index="03 / Act" eyebrow="Human-in-the-loop dashboard" title="Review Queue">
-        Every send, dismiss, hallucination flag, and audit writes an immutable feedback event.
-        Auto-send is {live ? "LIVE" : "dry-run — nothing is actually sent"}.
+      <Masthead index="03 / Act" eyebrow="Human review" title="Review Queue">
+        Approve, edit, or dismiss suggested replies. Every action is saved as feedback.
+        Auto-send is {live ? "LIVE" : "dry-run (nothing is actually sent)"}.
       </Masthead>
 
       <Scoreboard>

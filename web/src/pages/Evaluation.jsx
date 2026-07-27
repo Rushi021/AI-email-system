@@ -42,7 +42,7 @@ function RateTable({ rows }) {
   );
 }
 function fmt(v) {
-  if (v === null || v === undefined) return "—";
+  if (v === null || v === undefined) return "n/a";
   if (typeof v === "number") return Number.isInteger(v) ? v : v.toFixed(3);
   if (typeof v === "boolean") return String(v);
   return v;
@@ -77,9 +77,8 @@ export default function Evaluation() {
 
   return (
     <PageFade>
-      <Masthead index="05 / Measure" eyebrow="Two numbers · never blended" title="Evaluation">
-        Response Quality is automated (RAGAS). System Reliability comes only from real human
-        feedback. Every rate carries its n and a Wilson 95% confidence interval.
+      <Masthead index="05 / Measure" eyebrow="Quality and reliability" title="Evaluation">
+        Response quality is scored automatically with RAGAS. Reliability comes from human review feedback. Each rate shows its sample size and a 95% confidence interval.
       </Masthead>
 
       <div className="tabs">
@@ -92,13 +91,13 @@ export default function Evaluation() {
         <div className="empty"><Spinner dark /> Loading…</div>
       ) : tab === "quality" ? (
         !avg ? (
-          <Alert kind="warn">No RAGAS scores yet — run <span className="mono">python pipeline.py --all</span> or route live mail.</Alert>
+          <Alert kind="warn">No RAGAS scores yet. Run <span className="mono">python pipeline.py --all</span> or route live mail.</Alert>
         ) : (
           <>
             <Scoreboard>
-              <Score label="Faithfulness" value={avg.faithfulness ?? "—"} decimals={3} count={avg.faithfulness != null} color="var(--accent)" sub={`n=${avg.n_faithfulness}`} />
-              <Score label="Answer relevancy" value={avg.answer_relevancy ?? "—"} decimals={3} count={avg.answer_relevancy != null} color="var(--accent)" sub={`n=${avg.n_answer_relevancy}`} />
-              <Score label="Context precision" value={avg.context_precision ?? "—"} decimals={3} count={avg.context_precision != null} color="var(--accent)" sub={`n=${avg.n_context_precision}`} />
+              <Score label="Faithfulness" value={avg.faithfulness ?? "n/a"} decimals={3} count={avg.faithfulness != null} color="var(--accent)" sub={`n=${avg.n_faithfulness}`} />
+              <Score label="Answer relevancy" value={avg.answer_relevancy ?? "n/a"} decimals={3} count={avg.answer_relevancy != null} color="var(--accent)" sub={`n=${avg.n_answer_relevancy}`} />
+              <Score label="Context precision" value={avg.context_precision ?? "n/a"} decimals={3} count={avg.context_precision != null} color="var(--accent)" sub={`n=${avg.n_context_precision}`} />
               <Score label="Gated from AUTO" value={`${avg.gated} / ${avg.total}`} color="var(--review)" />
             </Scoreboard>
 
@@ -120,7 +119,7 @@ export default function Evaluation() {
         )
       ) : (
         <>
-          <div className="section-eyebrow">Critical error rate — labeled AUTO only</div>
+          <div className="section-eyebrow">Critical error rate (labeled AUTO only)</div>
           <div className="metrics">
             <Rate label="Critical error rate" payload={rel.critical_error_rate} />
             <Rate label="Overall reliability" payload={rel.reliability_rate} />
@@ -134,7 +133,7 @@ export default function Evaluation() {
           <div className="section-eyebrow">By category</div>
           <RateTable rows={byCat} />
 
-          <div className="section-eyebrow">Calibration — quality decile vs real acceptance</div>
+          <div className="section-eyebrow">Calibration (quality score vs acceptance)</div>
           {rel.calibration?.buckets?.length ? (
             <RateTable rows={rel.calibration.buckets} />
           ) : (
