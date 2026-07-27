@@ -22,6 +22,116 @@ RESULTS = Path("results")
 ENV_PATH = Path(".env")
 USER_EXAMPLES_PATH = DATA / "user_examples.json"
 
+_THEME_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #08080a;
+  --panel: #131316;
+  --panel-2: #17171b;
+  --border: #26262c;
+  --border-soft: #1e1e23;
+  --text: #ededf0;
+  --muted: #9a9aa6;
+  --accent: #6d5ef6;
+  --accent-2: #8b7cf8;
+}
+
+/* --- base typography & canvas --- */
+html, body, .stApp, [class*="css"] {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+}
+.stApp { background: radial-gradient(1200px 600px at 20% -10%, #14121f 0%, var(--bg) 55%) fixed; }
+
+/* tighten and center the main column */
+.block-container { padding-top: 3rem !important; padding-bottom: 4rem !important; max-width: 1080px; }
+
+/* headings */
+h1, h2, h3 { letter-spacing: -0.02em !important; font-weight: 700 !important; }
+h1 { font-size: 2rem !important; background: linear-gradient(180deg,#fff, #c9c9d4); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+[data-testid="stCaptionContainer"], .stCaption, small { color: var(--muted) !important; }
+
+/* --- sidebar / nav --- */
+[data-testid="stSidebar"] { border-right: 1px solid var(--border-soft); }
+[data-testid="stSidebarNav"] a { border-radius: 10px; margin: 2px 8px; transition: background .15s ease, color .15s ease; }
+[data-testid="stSidebarNav"] a:hover { background: rgba(109,94,246,.10); }
+[data-testid="stSidebarNav"] a[aria-current="page"] {
+  background: linear-gradient(90deg, rgba(109,94,246,.22), rgba(109,94,246,.04));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* --- buttons --- */
+.stButton > button, .stDownloadButton > button {
+  border-radius: 10px !important;
+  border: 1px solid var(--border) !important;
+  font-weight: 600 !important;
+  transition: transform .12s ease, box-shadow .2s ease, border-color .2s ease, background .2s ease;
+}
+.stButton > button:hover { transform: translateY(-1px); border-color: var(--accent) !important; }
+.stButton > button[kind="primary"] {
+  background: linear-gradient(180deg, var(--accent-2), var(--accent)) !important;
+  border: none !important;
+  box-shadow: 0 6px 20px -6px rgba(109,94,246,.65), inset 0 1px 0 rgba(255,255,255,.18);
+}
+.stButton > button[kind="primary"]:hover { box-shadow: 0 10px 28px -6px rgba(109,94,246,.8); }
+
+/* --- inputs --- */
+[data-testid="stTextArea"] textarea, [data-testid="stTextInput"] input,
+[data-baseweb="select"] > div, [data-testid="stNumberInput"] input {
+  background: var(--panel) !important;
+  border-radius: 10px !important;
+}
+[data-testid="stTextArea"] textarea:focus, [data-testid="stTextInput"] input:focus {
+  border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(109,94,246,.18) !important;
+}
+
+/* --- metrics as cards --- */
+[data-testid="stMetric"] {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -18px #000;
+}
+[data-testid="stMetricValue"] { font-weight: 700 !important; letter-spacing: -0.02em; }
+[data-testid="stMetricLabel"] { color: var(--muted) !important; text-transform: uppercase; font-size: .72rem !important; letter-spacing: .06em; }
+
+/* --- expanders & containers --- */
+[data-testid="stExpander"] {
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  background: var(--panel);
+  overflow: hidden;
+}
+[data-testid="stExpander"] summary:hover { color: var(--accent-2); }
+
+/* --- tabs --- */
+[data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--border-soft); }
+[data-baseweb="tab"] { border-radius: 10px 10px 0 0; }
+[data-baseweb="tab"][aria-selected="true"] { color: var(--text) !important; }
+[data-baseweb="tab-highlight"] { background: var(--accent) !important; height: 2px; }
+
+/* --- code / info / alert blocks --- */
+[data-testid="stCode"], pre, code { font-family: 'JetBrains Mono', monospace !important; }
+[data-testid="stCode"] { border: 1px solid var(--border) !important; border-radius: 12px !important; }
+[data-testid="stAlert"] { border-radius: 12px !important; border: 1px solid var(--border) !important; }
+
+hr { border-color: var(--border-soft) !important; }
+
+/* hide the default Streamlit chrome for a cleaner product feel */
+#MainMenu, [data-testid="stToolbar"] { visibility: hidden; }
+footer { visibility: hidden; }
+[data-testid="stHeader"] { background: transparent; }
+</style>
+"""
+
+
+def inject_theme() -> None:
+    """Inject the premium CSS layer. Called once from app.py; applies to every page."""
+    st.markdown(_THEME_CSS, unsafe_allow_html=True)
+
 PROVIDER_KEY_VARS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",

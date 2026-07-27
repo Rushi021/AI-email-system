@@ -151,18 +151,18 @@ tabs = st.tabs([
 with tabs[0]:
     items = queue_store.list_items(decision="escalate", status="pending")
     st.caption("Policy/remedy flagged escalate, or confidence was too low.")
-    [_item_card(i) for i in items] or st.info("Nothing to escalate.")
+    _ = [_item_card(i) for i in items] or st.info("Nothing to escalate.")
 with tabs[1]:
     items = queue_store.list_items(decision="review", status="pending")
     st.caption("Decent draft, but not confident enough to auto-send. Approve or edit.")
-    [_item_card(i) for i in items] or st.info("Nothing awaiting review.")
+    _ = [_item_card(i) for i in items] or st.info("Nothing awaiting review.")
 with tabs[2]:
     items = [
         i for i in queue_store.list_items(decision="auto", status="pending")
         if not i.get("audit_sample")
     ]
     st.caption("High-confidence, gate-clean replies — pre-approved drafts in dry-run mode.")
-    [_item_card(i) for i in items] or st.info("Nothing pending auto-reply.")
+    _ = [_item_card(i) for i in items] or st.info("Nothing pending auto-reply.")
 with tabs[3]:
     audit_items = [
         i for i in queue_store.list_items(decision="auto", status="pending")
@@ -172,11 +172,11 @@ with tabs[3]:
         "Deterministic sample of AUTO-routed tickets for escalation-miss audit. "
         "Confirm whether a human should have been involved."
     )
-    [_item_card(i, audit=True) for i in audit_items] or st.info("No audit samples pending.")
+    _ = [_item_card(i, audit=True) for i in audit_items] or st.info("No audit samples pending.")
 with tabs[4]:
     done = [
         i for s in ("sent", "simulated", "dismissed")
         for i in queue_store.list_items(status=s)
     ]
     st.caption("Sent, simulated, or dismissed.")
-    [_item_card(i) for i in done] or st.info("Nothing done yet.")
+    _ = [_item_card(i) for i in done] or st.info("Nothing done yet.")

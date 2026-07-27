@@ -16,6 +16,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 st.set_page_config(page_title="AI Suggested-Response System", page_icon="✉️", layout="wide")
 
+from views.common import inject_theme  # noqa: E402
+
+inject_theme()
+
 from src.queue_store import counts  # noqa: E402
 
 pending = counts()["pending_total"]
