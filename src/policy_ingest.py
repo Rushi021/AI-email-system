@@ -103,6 +103,7 @@ def normalize_rule(section: RawSection, *, use_llm: bool = False) -> PolicyRule:
     if _looks_global(heading, body):
         category = "global"
 
+    depends_on, dependency_status = _infer_depends_on(condition, outcome, full)
     return PolicyRule(
         id=rule_id,
         condition=condition,
@@ -112,6 +113,8 @@ def normalize_rule(section: RawSection, *, use_llm: bool = False) -> PolicyRule:
         effective_date=effective_date,
         text=full,
         section_hash=section.content_hash,
+        depends_on=depends_on,
+        dependency_status=dependency_status,
     )
 
 
@@ -396,6 +399,59 @@ def _dedupe_ids(rules: list[PolicyRule]) -> list[PolicyRule]:
             r = r.model_copy(update={"id": f"{base}_{n + 1}"})
         out.append(r)
     return out
+
+
+# Company-agnostic tokens that indicate a rule conditions on a transaction field.
+_DEPENDENCY_TOKENS: dict[str, tuple[str, ...]] = {
+    "price": (
+        "price", "amount", "total", "value", "cost", "$", "usd", "eur", "gbp",
+        "dollar", "refund amount", "order total", "purchase amount",
+    ),
+    "order_date": (
+        "order date", "purchase date", "within", "days of", "day of",
+        "return window", "from delivery", "from purchase", "after order",
+        "since order", "ordered on", "date of purchase",
+    ),
+    "status": (
+        "status", "delivered", "shipped", "in transit", "cancelled",
+        "canceled", "processing", "fulfilled", "fulfilment", "fulfillment",
+        "lost", "damaged", "returned", "not shipped",
+    ),
+    "customer_id": (
+        "customer id", "account holder", "registered email", "same customer",
+        "customer account", "buyer identity", "verified customer",
+    ),
+}
+
+# Phrases that suggest the rule is conditional but we couldn't map the field.
+_CONDITIONAL_MARKERS = (
+    "if ", "when ", "unless ", "provided that", "subject to", "only if",
+    "where ", "for orders", "for customers",
+)
+
+
+def _infer_depends_on(condition: str, outcome: str, full: str) -> tuple[list[str], str]:
+    """Deterministic structural/token inference of transaction-field dependencies.
+
+    Returns (depends_on, dependency_status). Empty depends_on with status
+    "resolved" means the rule is demonstrably unconditional w.r.t. these fields.
+    Status "unknown" means the rule looks conditional but no field matched.
+    """
+    blob = f"{condition}\n{outcome}\n{full}".lower()
+    deps: list[str] = []
+    for field, tokens in _DEPENDENCY_TOKENS.items():
+        if any(tok in blob for tok in tokens):
+            deps.append(field)
+    if deps:
+        # Preserve stable order matching RECOMMENDED_TXN_FIELDS
+        order = ["customer_id", "order_date", "price", "status"]
+        return [f for f in order if f in deps], "resolved"
+    # No field tokens. Is the rule clearly unconditional?
+    cond = (condition or "").strip().lower()
+    if not cond or not any(m in f"{cond} {full.lower()}" for m in _CONDITIONAL_MARKERS):
+        return [], "resolved"
+    # Looks conditional but we couldn't map fields.
+    return [], "unknown"
 
 
 def _demo() -> None:

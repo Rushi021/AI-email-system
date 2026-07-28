@@ -73,6 +73,10 @@ class PolicyRule(BaseModel):
     effective_date: str = ""
     text: str = ""
     section_hash: str = ""
+    # Transaction fields this rule's conditions depend on. Populated at ingest.
+    # dependency_status="unknown" means deterministic inference could not decide.
+    depends_on: list[str] = Field(default_factory=list)
+    dependency_status: str = "resolved"  # resolved | unknown
 
 
 class Remedy(BaseModel):
