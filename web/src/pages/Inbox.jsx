@@ -5,7 +5,7 @@ import { useApp } from "../App.jsx";
 import { Alert, DecisionChip, Field, Masthead, PageFade, Score, Scoreboard, Spinner } from "../components/ui.jsx";
 
 export default function Inbox() {
-  const { config, refresh } = useApp();
+  const { config, refresh, setup_required } = useApp();
   const [limit, setLimit] = useState(20);
   const [syncBusy, setSyncBusy] = useState(false);
   const [summary, setSummary] = useState(null);
@@ -40,6 +40,12 @@ export default function Inbox() {
         Sync unread mail from your connected source, or paste one email. Each message is classified and queued for review.
       </Masthead>
 
+      {setup_required && (
+        <Alert kind="warn">
+          Company data setup required — upload a policy and transactions in <b>Settings → Company Data</b> before routing mail.
+        </Alert>
+      )}
+
       <div className="panel">
         <div className="panel-title">Sync inbox <span className="kbd">{config?.email_source || "n/a"}</span></div>
         <p className="panel-note">
@@ -49,9 +55,9 @@ export default function Inbox() {
         <div className="row">
           <Field label="Max messages">
             <input type="number" min={1} max={100} value={limit}
-              onChange={(e) => setLimit(e.target.value)} style={{ width: 120 }} />
+              onChange={(e) => setLimit(e.target.value)} style={{ width: 120 }} disabled={!!setup_required} />
           </Field>
-          <button className="btn primary" onClick={sync} disabled={syncBusy} style={{ alignSelf: "center" }}>
+          <button className="btn primary" onClick={sync} disabled={syncBusy || !!setup_required} style={{ alignSelf: "center" }}>
             {syncBusy ? <><Spinner /> Routing…</> : "Sync inbox now"}
           </button>
         </div>
@@ -90,7 +96,7 @@ export default function Inbox() {
         <Field label="Email body">
           <textarea rows={6} value={body} onChange={(e) => setBody(e.target.value)} />
         </Field>
-        <button className="btn accent" onClick={routeOne} disabled={!body.trim() || routeBusy}>
+        <button className="btn accent" onClick={routeOne} disabled={!body.trim() || routeBusy || !!setup_required}>
           {routeBusy ? <><Spinner /> Routing…</> : "Route this email"}
         </button>
       </div>

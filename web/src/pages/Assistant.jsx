@@ -20,7 +20,7 @@ function Metric({ label, value }) {
 }
 
 export default function Assistant() {
-  const { orders } = useApp();
+  const { orders, setup_required } = useApp();
   const [email, setEmail] = useState("");
   const [order, setOrder] = useState(NO_ORDER);
   const [busy, setBusy] = useState(false);
@@ -58,6 +58,12 @@ export default function Assistant() {
         Paste a customer email to get a suggested reply grounded in your policy and past tickets. You can score it when you want.
       </Masthead>
 
+      {setup_required && (
+        <Alert kind="warn">
+          Company data setup required — upload a policy and transactions in <b>Settings → Company Data</b> before drafting replies.
+        </Alert>
+      )}
+
       <div className="panel">
         <div className="panel-title">Incoming email <span className="kbd">INPUT</span></div>
         <Field label="Customer email">
@@ -66,10 +72,11 @@ export default function Assistant() {
             value={email}
             placeholder="Paste the customer's email here…"
             onChange={(e) => setEmail(e.target.value)}
+            disabled={!!setup_required}
           />
         </Field>
         <Field label="Order record">
-          <select value={order} onChange={(e) => setOrder(e.target.value)}>
+          <select value={order} onChange={(e) => setOrder(e.target.value)} disabled={!!setup_required}>
             <option value="">Continue without a transaction record</option>
             {orders.map((o) => (
               <option key={o.order_id} value={o.order_id}>
@@ -82,7 +89,7 @@ export default function Assistant() {
           <Alert kind="info">Order <b className="mono">{result.detected_order_id}</b> was found in the email. Its transaction record is being used.</Alert>
         )}
         <div className="btn-row">
-          <button className="btn primary" onClick={suggest} disabled={!email.trim() || busy}>
+          <button className="btn primary" onClick={suggest} disabled={!email.trim() || busy || !!setup_required}>
             {busy ? <><Spinner /> Drafting…</> : "Suggest a reply"}
           </button>
         </div>

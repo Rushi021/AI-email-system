@@ -122,6 +122,7 @@ def bootstrap():
     r = _resources(require_ready=False)
     bundle = r["bundle"]
     cfg = load_config()
+    setup = company_data.status()
     return {
         "orders": [
             {"order_id": oid, "product": t.product, "price": t.price, "status": t.status}
@@ -133,9 +134,10 @@ def bootstrap():
             "t1": cfg["t1"],
             "t2": cfg["t2"],
         },
-        "categories": bundle.policy_store.categories(),
+        "categories": bundle.policy_store.categories() if hasattr(bundle.policy_store, "categories") else [],
         "queue_counts": queue_store.counts(),
-        "setup_required": bool(bundle.setup_required or not bundle.ready),
+        "company_data": setup,
+        "setup_required": bool(setup.get("setup_required", True) or bundle.setup_required or not bundle.ready),
         "company_data_version": bundle.version_id,
     }
 
@@ -429,23 +431,38 @@ def evaluation_reliability():
 @app.get("/api/settings")
 def settings_get():
     cfg = load_config()
-    r = _resources()
-    ps = r["policy_store"]
+    r = _resources(require_ready=False)
+    bundle = r["bundle"]
+    ps = bundle.policy_store
     gen_provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-    cls_provider = (os.getenv("CLASSIFY_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "anthropic").lower()
+    cls_provider = (
+        os.getenv("CLASSIFY_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "anthropic"
+    ).lower()
+    setup = company_data.status()
+    assets = setup.get("assets") or {}
+    pol = assets.get("policy") or {}
     return {
         "config": cfg,
         "policy": {
-            "filename": cfg.get("policy_filename") or "policy.pdf",
-            "rules": len(ps.rules),
-            "categories": ps.categories(),
-            "preview": ps.chunks[0] if ps.chunks else "",
+            "filename": pol.get("filename") or "(none)",
+            "rules": len(getattr(ps, "rules", []) or []),
+            "categories": ps.categories() if hasattr(ps, "categories") else [],
+            "preview": (ps.chunks[0] if getattr(ps, "chunks", None) else ""),
+        },
+        "company_data": setup,
+        "canonical_fields": {
+            "transactions": canonical_fields_for("transactions"),
+            "tickets": canonical_fields_for("tickets"),
         },
         "providers": [
             {
                 "name": p,
                 "configured": bool(os.getenv(key_var)),
-                "used_for": [u for u, prov in (("generation", gen_provider), ("categorization", cls_provider)) if prov == p],
+                "used_for": [
+                    u
+                    for u, prov in (("generation", gen_provider), ("categorization", cls_provider))
+                    if prov == p
+                ],
             }
             for p, key_var in PROVIDER_KEY_VARS.items()
         ],
@@ -459,11 +476,6 @@ def settings_get():
         "category_labels": CATEGORY_LABELS,
         "examples": load_user_examples(),
         "defaults": DEFAULTS,
-        "canonical_fields": {
-            "transactions": canonical_fields_for("transactions"),
-            "tickets": canonical_fields_for("tickets"),
-        },
-        "company_data": company_data.status(),
     }
 
 
