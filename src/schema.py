@@ -12,18 +12,24 @@ from pydantic import BaseModel, Field
 class Transaction(BaseModel):
     """A generic customer transaction record. Any company's order export can be
     mapped onto this shape. Extra fields are allowed so a different company's
-    export can carry additional columns without code changes."""
+    export can carry additional columns without code changes.
+
+    Recommended fields (customer_id, order_date, price, status) may be missing
+    after a DEGRADED upload; missingness is recorded separately
+    (`_missing_fields` / bundle `transaction_missing_fields`) and must never be
+    inferred from sentinel defaults such as price=0.0.
+    """
 
     model_config = {"extra": "allow"}
 
     order_id: str
-    customer_id: str
-    product: str
-    price: float
-    order_date: str
+    customer_id: str = ""
+    product: str = "(unspecified product)"
+    price: float = 0.0
+    order_date: str = ""
     delivery_date: Optional[str] = None
     promised_delivery_date: Optional[str] = None
-    status: str
+    status: str = ""
     final_sale: bool = False
     returns_last_90_days: int = 0
 
