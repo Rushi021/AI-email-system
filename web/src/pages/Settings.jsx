@@ -54,13 +54,21 @@ export default function Settings() {
   return (
     <PageFade>
       <Masthead index="04 / Configure" eyebrow="App configuration" title="Settings">
-        Upload your policy, pick models, and set routing thresholds. Company data stays in the files you provide.
+        Upload your company data, pick models, and set routing thresholds. Policy and transactions are required before generation works.
       </Masthead>
 
       {flash && <Alert kind="ok">{flash}</Alert>}
       {error && <Alert kind="err">{error}</Alert>}
 
-      <Section title="Policy document" note={`Loaded: ${data.policy.filename} · ${data.policy.rules} indexed rules · categories: ${data.policy.categories.join(", ") || "none"}`}>
+      <CompanyDataSection
+        data={data}
+        busy={busy}
+        run={run}
+        setError={setError}
+        setFlash={setFlash}
+      />
+
+      <Section title="Policy document (quick replace)" note={`Loaded: ${data.policy.filename} · ${data.policy.rules} indexed rules · categories: ${(data.policy.categories || []).join(", ") || "none"}`}>
         {data.policy.preview && <div className="email-block" style={{ marginBottom: 14 }}>{data.policy.preview.slice(0, 600)}</div>}
         <input ref={fileRef} type="file" accept=".pdf,.docx,.md,.txt" style={{ marginBottom: 12 }} />
         <div>
@@ -261,3 +269,275 @@ function StorageSection({ cfg, set, saveConfig, run, busy, setFlash }) {
     </Section>
   );
 }
+
+// ---------------------------------------------------------- company data setup
+const DATE_ORDERS = ["DMY", "MDY", "YMD"];
+const MONEY_STYLES = [
+  { value: "dot_decimal", label: "1,234.56 (dot decimal)" },
+  { value: "comma_decimal", label: "1.234,56 (comma decimal)" },
+];
+
+function emptyAsset() {
+  return { token: "", fileHash: "", filename: "", preview: null, mapping: { fields: {}, date_orders: {}, money_styles: {}, sheet: null }, dryRun: null };
+}
+
+function CompanyDataSection({ data, busy, run, setError, setFlash }) {
+  const cd = data.company_data || {};
+  const canonical = data.canonical_fields || { transactions: [], tickets: [] };
+  const [assets, setAssets] = useState({
+    policy: emptyAsset(),
+    transactions: emptyAsset(),
+    tickets: emptyAsset(),
+  });
+  const [confirmDegraded, setConfirmDegraded] = useState(false);
+  const [rollbackId, setRollbackId] = useState("");
+
+  function patch(target, patchObj) {
+    setAssets((a) => ({ ...a, [target]: { ...a[target], ...patchObj } }));
+  }
+
+  async function stage(target, file) {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    const staged = await api.postForm(`/settings/company-data/stage?target=${target}`, form);
+    const preview = target === "policy"
+      ? { columns: [], samples: [], suggested_mapping: { fields: {}, date_orders: {}, money_styles: {} }, sheets: [], row_count: 0 }
+      : await api.get(`/settings/company-data/preview/${staged.token}`);
+    const mapping = preview.suggested_mapping || { fields: {}, date_orders: {}, money_styles: {}, sheet: preview.sheet || null };
+    patch(target, {
+      token: staged.token,
+      fileHash: staged.file_hash,
+      filename: staged.filename,
+      preview,
+      mapping,
+      dryRun: null,
+    });
+    return staged;
+  }
+
+  async function dryRun(target) {
+    const a = assets[target];
+    if (!a.token) throw new Error(`Stage a ${target} file first.`);
+    const result = await api.post(`/settings/company-data/dry-run/${a.token}`, {
+      mapping: a.mapping,
+      file_hash: a.fileHash,
+    });
+    patch(target, { dryRun: result });
+    return result;
+  }
+
+  function setField(target, canon, src) {
+    const mapping = {
+      ...assets[target].mapping,
+      fields: { ...(assets[target].mapping.fields || {}), [canon]: src || null },
+    };
+    patch(target, { mapping, dryRun: null });
+  }
+
+  function setConvention(target, kind, canon, value) {
+    const key = kind === "date" ? "date_orders" : "money_styles";
+    const mapping = {
+      ...assets[target].mapping,
+      [key]: { ...(assets[target].mapping[key] || {}), [canon]: value || undefined },
+    };
+    patch(target, { mapping, dryRun: null });
+  }
+
+  const txnVerdict = assets.transactions.dryRun?.verdict;
+  const needsConfirm = txnVerdict === "DEGRADED";
+
+  return (
+    <Section
+      title="Company data"
+      note={
+        cd.setup_required
+          ? "Setup required: upload a policy document and a transactions file, map columns, dry-run, then activate."
+          : `Active version ${cd.active_version || "—"} · ${(cd.advisories || []).join(" · ") || "ready"}`
+      }
+    >
+      {(cd.capability_impact || []).length > 0 && (
+        <Alert kind="err">Dataset gaps (not routing flags): {(cd.capability_impact || []).join("; ")}</Alert>
+      )}
+      {(cd.advisories || []).filter((a) => a !== "setup_required").map((a) => (
+        <p className="panel-note" key={a}>{a}</p>
+      ))}
+
+      {["policy", "transactions", "tickets"].map((target) => {
+        const a = assets[target];
+        const fields = target === "policy" ? [] : (canonical[target] || []);
+        const accept = target === "policy" ? ".pdf,.docx,.md,.txt" : ".csv,.tsv,.xlsx,.json";
+        return (
+          <div key={target} style={{ borderTop: "1px solid var(--line-2)", paddingTop: 14, marginTop: 14 }}>
+            <div className="panel-title" style={{ fontSize: ".9rem" }}>
+              {target}{target === "tickets" ? " (optional)" : " (required)"}
+            </div>
+            <input
+              type="file"
+              accept={accept}
+              style={{ marginBottom: 8 }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                run(`stage-${target}`, () => stage(target, f), `${target} staged.`);
+              }}
+            />
+            {a.filename && <p className="panel-note">Staged: {a.filename} · hash {String(a.fileHash || "").slice(0, 12)}…</p>}
+
+            {a.preview?.sheets?.length > 1 && (
+              <Field label="Sheet">
+                <select
+                  value={a.mapping.sheet || a.preview.sheets[0]}
+                  onChange={(e) => run(`sheet-${target}`, async () => {
+                    const preview = await api.get(`/settings/company-data/preview/${a.token}?sheet=${encodeURIComponent(e.target.value)}`);
+                    patch(target, {
+                      preview,
+                      mapping: { ...preview.suggested_mapping, sheet: e.target.value },
+                      dryRun: null,
+                    });
+                  })}
+                >
+                  {a.preview.sheets.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+            )}
+
+            {fields.length > 0 && a.preview && (
+              <div style={{ marginTop: 8 }}>
+                <p className="panel-note">Map each required field to a column in your file. Suggestions are defaults only.</p>
+                {fields.map((canon) => (
+                  <div className="row" key={canon} style={{ gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                    <Field label={canon}>
+                      <select
+                        value={a.mapping.fields?.[canon] || ""}
+                        onChange={(e) => setField(target, canon, e.target.value)}
+                        style={{ minWidth: 180 }}
+                      >
+                        <option value="">— unmapped —</option>
+                        {(a.preview.columns || []).map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </Field>
+                    {["order_date", "delivery_date", "promised_delivery_date"].includes(canon) && a.mapping.fields?.[canon] && (
+                      <Field label="Date order">
+                        <select
+                          value={a.mapping.date_orders?.[canon] || ""}
+                          onChange={(e) => setConvention(target, "date", canon, e.target.value)}
+                        >
+                          <option value="">auto / choose if blocked</option>
+                          {DATE_ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </Field>
+                    )}
+                    {canon === "price" && a.mapping.fields?.[canon] && (
+                      <Field label="Money style">
+                        <select
+                          value={a.mapping.money_styles?.[canon] || ""}
+                          onChange={(e) => setConvention(target, "money", canon, e.target.value)}
+                        >
+                          <option value="">auto / choose if blocked</option>
+                          {MONEY_STYLES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      </Field>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {target !== "policy" && a.token && (
+              <button className="btn ghost" style={{ marginTop: 8 }} disabled={busy === `dry-${target}`} onClick={() => run(`dry-${target}`, () => dryRun(target), `${target} dry-run complete.`)}>
+                {busy === `dry-${target}` ? <Spinner dark /> : "Dry-run validate"}
+              </button>
+            )}
+            {target === "policy" && a.token && (
+              <button className="btn ghost" style={{ marginTop: 8 }} disabled={busy === `dry-${target}`} onClick={() => run(`dry-${target}`, () => dryRun(target), "Policy dry-run complete.")}>
+                {busy === `dry-${target}` ? <Spinner dark /> : "Dry-run validate"}
+              </button>
+            )}
+
+            {a.dryRun && (
+              <div style={{ marginTop: 10 }}>
+                <span className="chip">verdict: {a.dryRun.verdict}</span>
+                {(a.dryRun.capability_impact || []).map((c) => <span className="chip" key={c}>{c}</span>)}
+                {(a.dryRun.advisories || []).map((c) => <span className="chip" key={c}>{c}</span>)}
+                {(a.dryRun.issues || []).slice(0, 8).map((iss, i) => (
+                  <p className="panel-note" key={i}>{iss.level}: {iss.message}{iss.row != null ? ` (row ${iss.row})` : ""}</p>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {needsConfirm && (
+        <label className="field" style={{ marginTop: 14 }}>
+          <Toggle checked={confirmDegraded} onChange={setConfirmDegraded} label="I understand this DEGRADED upload will activate with limited capabilities (AUTO still possible for unaffected emails)" />
+        </label>
+      )}
+
+      <div className="btn-row" style={{ marginTop: 16 }}>
+        <SaveBtn
+          busy={busy === "activate"}
+          onClick={() => {
+            if (!assets.policy.token || !assets.transactions.token) {
+              setError("Policy and transactions are required.");
+              return;
+            }
+            if (needsConfirm && !confirmDegraded) {
+              setError("Confirm DEGRADED activation to continue.");
+              return;
+            }
+            run("activate", async () => {
+              // Ensure dry-runs exist
+              if (!assets.policy.dryRun) await dryRun("policy");
+              if (!assets.transactions.dryRun) await dryRun("transactions");
+              if (assets.tickets.token && !assets.tickets.dryRun) await dryRun("tickets");
+              const body = {
+                policy: { token: assets.policy.token, mapping: {}, file_hash: assets.policy.fileHash },
+                transactions: {
+                  token: assets.transactions.token,
+                  mapping: assets.transactions.mapping,
+                  file_hash: assets.transactions.fileHash,
+                },
+                confirm_degraded: confirmDegraded || assets.transactions.dryRun?.verdict === "READY",
+              };
+              if (assets.tickets.token) {
+                body.tickets = {
+                  token: assets.tickets.token,
+                  mapping: assets.tickets.mapping,
+                  file_hash: assets.tickets.fileHash,
+                };
+              }
+              await api.post("/settings/company-data/activate", body);
+              setAssets({ policy: emptyAsset(), transactions: emptyAsset(), tickets: emptyAsset() });
+              setConfirmDegraded(false);
+            }, "Company data activated.");
+          }}
+        >
+          Activate company data
+        </SaveBtn>
+      </div>
+
+      {(cd.versions || []).length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <Field label="Rollback to previous version">
+            <select value={rollbackId} onChange={(e) => setRollbackId(e.target.value)}>
+              <option value="">— select version —</option>
+              {(cd.versions || []).map((v) => (
+                <option key={v} value={v}>{v}{v === cd.active_version ? " (active)" : ""}</option>
+              ))}
+            </select>
+          </Field>
+          <button
+            className="btn ghost"
+            disabled={!rollbackId || rollbackId === cd.active_version || busy === "rollback"}
+            onClick={() => run("rollback", () => api.post("/settings/company-data/rollback", { version_id: rollbackId }), "Rolled back.")}
+          >
+            {busy === "rollback" ? <Spinner dark /> : "Rollback (rebuild-verify-swap)"}
+          </button>
+        </div>
+      )}
+    </Section>
+  );
+}
+
