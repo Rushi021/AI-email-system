@@ -112,10 +112,6 @@ def _txn_for(order_id: str | None):
     return placeholder_transaction()
 
 
-def _disable_auto_for_bundle(bundle) -> bool:
-    return bool((bundle.quality or {}).get("disable_auto_for_bundle"))
-
-
 # ============================================================== bootstrap / shared
 @app.get("/api/bootstrap")
 def bootstrap():
@@ -213,8 +209,6 @@ def inbox_sync(req: SyncReq):
     for e in emails:
         event_bus.publish(parse_email(e))
 
-    disable_auto = _disable_auto_for_bundle(bundle)
-
     def _process(email: IncomingEmail) -> dict:
         item = router.route_email(
             email,
@@ -222,7 +216,8 @@ def inbox_sync(req: SyncReq):
             r["policy_store"],
             r["retriever"],
             cfg,
-            disable_auto_for_bundle=disable_auto,
+            transaction_missing_fields=bundle.transaction_missing_fields,
+            company_data_version=bundle.version_id,
         )
         queue_store.upsert(item)
         return item
@@ -275,7 +270,8 @@ def inbox_route_one(req: RouteOneReq):
             r["policy_store"],
             r["retriever"],
             cfg,
-            disable_auto_for_bundle=_disable_auto_for_bundle(bundle),
+            transaction_missing_fields=bundle.transaction_missing_fields,
+            company_data_version=bundle.version_id,
         )
         queue_store.upsert(item)
     except Exception as exc:

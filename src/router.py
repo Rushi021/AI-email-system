@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 
 from src.classifier import classify
+from src.company_data.quality import compute_email_quality_flags, rules_index
 from src.config import DEFAULTS, load_config
 from src.evaluator import evaluate_generated
 from src.generator import generate_reply
@@ -56,13 +57,6 @@ def _audit_sample(response_id: str, rate: float) -> bool:
     return bucket < int(rate * 1000)
 
 
-def _apply_disable_auto_for_bundle(decision: str, disable_auto_for_bundle: bool) -> str:
-    """Interim DEGRADED gate — boolean only; never writes into ev.flags."""
-    if disable_auto_for_bundle and decision != "ignore":
-        return "review"
-    return decision
-
-
 def route_email(
     email: IncomingEmail,
     transactions: dict,
@@ -70,13 +64,15 @@ def route_email(
     retriever: TicketRetriever,
     config: dict | None = None,
     *,
-    disable_auto_for_bundle: bool = False,
+    transaction_missing_fields: dict | None = None,
+    company_data_version: str = "",
 ) -> dict:
     cfg = {**DEFAULTS, **load_config(), **(config or {})}
     t1, t2 = float(cfg["t1"]), float(cfg["t2"])
     text = f"{email.subject}\n{email.body}".strip()
 
     order_id = detect_order_id(text, transactions)
+    used_placeholder = not bool(order_id)
     txn = transactions[order_id] if order_id else placeholder_transaction()
     cls = classify(text, has_order=bool(order_id))
     category = cls.category
@@ -90,6 +86,8 @@ def route_email(
         "body": email.body,
         "order_id": order_id or "",
         "category": category,
+        "company_data_version": company_data_version,
+        "used_placeholder": used_placeholder,
     }
 
     if cls.is_noise:
@@ -125,11 +123,28 @@ def route_email(
     q = float(ev.quality_score) if ev.quality_score is not None else 0.0
     confidence = round(max(0.0, min(100.0, 100.0 * q - ev.deterministic_penalty)), 1)
 
+    # Per-email data-quality flags (never file-wide). Appended to ev.flags.
+    missing = None
+    if not used_placeholder and order_id and transaction_missing_fields is not None:
+        missing = transaction_missing_fields.get(order_id) or frozenset()
+    quality_flags = compute_email_quality_flags(
+        used_placeholder=used_placeholder,
+        order_id=order_id or "",
+        missing_fields=missing,
+        gen=gen,
+        rules_by_id=rules_index(policy_store.rules),
+    )
+    if quality_flags:
+        ev.flags = list(ev.flags) + quality_flags
+
     # Soft flags that block AUTO via _decide (exclude informational gated_from_auto dup).
     hard_flags = [
         f for f in ev.flags
         if not f.startswith("gated_from_auto") and not f.startswith("scoring_error")
     ]
+
+    # Fail closed on unchecked disagreement: if this would otherwise be AUTO,
+    # force the disagreement check before deciding.
     provisional = _decide(
         confidence,
         hard_flags,
@@ -138,7 +153,6 @@ def route_email(
         t1,
         t2,
     )
-    # Fail closed: never AUTO without a completed disagreement check.
     if provisional == "auto" and not ev.disagreement_checked:
         topk_rule = gen.remedy.rule_cited or (gen.cited_rule_ids[0] if gen.cited_rule_ids else "")
         disagree = check_retrieval_disagreement(
@@ -180,12 +194,13 @@ def route_email(
         t1,
         t2,
     )
+    # Final fail-closed: never AUTO without a completed disagreement check.
     if decision == "auto" and not ev.disagreement_checked:
         decision = "review"
         ev.gated_from_auto = True
         if "disagreement_unchecked" not in ev.flags:
             ev.flags = list(ev.flags) + ["disagreement_unchecked"]
-    decision = _apply_disable_auto_for_bundle(decision, disable_auto_for_bundle)
+
     audit = decision == "auto" and _audit_sample(
         gen.response_id, float(cfg.get("audit_sample_rate", 0.05))
     )
@@ -237,11 +252,8 @@ def _demo() -> None:
     assert _decide(95, [], False, True, 80, 50) == "review"
     assert _decide(95, ["order_id_not_referenced (-4)"], False, False, 80, 50) == "review"
     assert _decide(65, [], False, False, 80, 50) == "review"
+    assert _decide(95, ["unverifiable:order_value"], False, False, 80, 50) == "review"
     assert _priority("escalate", 249, True) > _priority("review", 999, True)
-    assert _apply_disable_auto_for_bundle("auto", True) == "review"
-    assert _apply_disable_auto_for_bundle("escalate", True) == "review"
-    assert _apply_disable_auto_for_bundle("ignore", True) == "ignore"
-    assert _apply_disable_auto_for_bundle("auto", False) == "auto"
     print("router self-check OK")
 
 

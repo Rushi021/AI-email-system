@@ -362,9 +362,6 @@ def _activate_locked(
         "capability_impact": list(txn_dry.capability_impact),
         "txn_verdict": txn_dry.verdict,
         "policy_hash": pol_hash,
-        # Interim Phase-1 gate (metadata only — never copied into ev.flags).
-        # Removed in favor of per-email unverifiable:* flags later.
-        "disable_auto_for_bundle": txn_dry.verdict == "DEGRADED",
     }
     if quality["weak_tone_corpus"] and corpus_n > 0:
         if "weak:tone_corpus" not in quality["advisories"]:

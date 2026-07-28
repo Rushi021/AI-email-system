@@ -95,7 +95,6 @@ def test_activate_builds_versioned_bundle(isolated_blob, tmp_path):
     assert status()["active_version"] == b1.version_id
     assert "O1" in b1.transactions
     assert len(b1.policy_store.rules) >= 2
-    assert b1.quality.get("disable_auto_for_bundle") is False
     assert b1.quality.get("txn_verdict") == "READY"
 
     loaded = load_active_company_bundle(config=cfg)
@@ -103,7 +102,7 @@ def test_activate_builds_versioned_bundle(isolated_blob, tmp_path):
     assert "O1" in loaded.transactions
 
 
-def test_degraded_sets_disable_auto_metadata_only(isolated_blob, tmp_path):
+def test_degraded_records_missing_fields_not_file_flags(isolated_blob, tmp_path):
     pol = _minimal_policy_md(tmp_path)
     txn = _stage_text(
         tmp_path,
@@ -131,7 +130,6 @@ def test_degraded_sets_disable_auto_metadata_only(isolated_blob, tmp_path):
         config=cfg,
     )
     assert bundle.quality.get("txn_verdict") == "DEGRADED"
-    assert bundle.quality.get("disable_auto_for_bundle") is True
     assert "price" in bundle.transaction_missing_fields.get("O1", frozenset())
     # Metadata only — quality dict must not be treated as email flags.
     assert "unverifiable:order_value" not in (bundle.quality.get("advisories") or [])
@@ -177,10 +175,56 @@ def test_failed_activation_leaves_active_unchanged(isolated_blob, tmp_path):
     assert status()["active_version"] == active
 
 
-def test_disable_auto_hook_forces_review_not_flags():
-    from src.router import _apply_disable_auto_for_bundle
+from src.company_data.quality import compute_email_quality_flags
+from src.router import _decide
+from src.schema import GeneratedReply, PolicyRule, Remedy
 
-    assert _apply_disable_auto_for_bundle("auto", True) == "review"
-    assert _apply_disable_auto_for_bundle("escalate", True) == "review"
-    assert _apply_disable_auto_for_bundle("ignore", True) == "ignore"
-    assert _apply_disable_auto_for_bundle("auto", False) == "auto"
+
+def test_quality_flags_per_email_not_file_wide():
+    missing = frozenset({"price"})
+    rule_no_price = PolicyRule(id="R1", text="Always be polite.", depends_on=[], dependency_status="resolved")
+    rule_price = PolicyRule(
+        id="R2",
+        text="Orders over $200 MUST escalate.",
+        condition="order total exceeds threshold",
+        depends_on=["price"],
+        dependency_status="resolved",
+    )
+    rules = {"R1": rule_no_price, "R2": rule_price}
+    gen_ok = GeneratedReply(
+        ticket_id="t", reply="ok", remedy=Remedy(rule_cited="R1"),
+        cited_rule_ids=["R1"], retrieved_rule_ids=["R1"],
+    )
+    assert compute_email_quality_flags(
+        used_placeholder=False, order_id="O1", missing_fields=missing, gen=gen_ok, rules_by_id=rules,
+    ) == []
+    gen_price = GeneratedReply(
+        ticket_id="t", reply="ok", remedy=Remedy(rule_cited="R2"),
+        cited_rule_ids=["R2"], retrieved_rule_ids=["R2"],
+    )
+    assert compute_email_quality_flags(
+        used_placeholder=False, order_id="O1", missing_fields=missing, gen=gen_price, rules_by_id=rules,
+    ) == ["unverifiable:order_value"]
+    assert compute_email_quality_flags(
+        used_placeholder=False, order_id="O2", missing_fields=frozenset(), gen=gen_price, rules_by_id=rules,
+    ) == []
+
+
+def test_placeholder_only_no_transaction_flag():
+    gen = GeneratedReply(ticket_id="t", reply="ok", cited_rule_ids=["R1"], retrieved_rule_ids=["R1"])
+    flags = compute_email_quality_flags(
+        used_placeholder=True, order_id="", missing_fields=frozenset({"price", "status"}),
+        gen=gen, rules_by_id={},
+    )
+    assert flags == ["unverifiable:no_transaction"]
+
+
+def test_degraded_does_not_block_auto_path():
+    assert _decide(95, [], False, False, 80, 50) == "auto"
+    assert _decide(95, ["unverifiable:order_value"], False, False, 80, 50) == "review"
+
+
+def test_dataset_warnings_never_in_ev_flags():
+    # File-level advisories must never be copied into per-email flags.
+    from src.company_data.schema import FIELD_FLAG_MAP
+    assert "weak:tone_corpus" not in FIELD_FLAG_MAP.values()
