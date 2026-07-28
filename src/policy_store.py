@@ -126,8 +126,19 @@ class PolicyStore:
         return get_blob_store()
 
     def _index_key(self, name: str) -> str:
-        # Content-addressed layout under results/policy_index/ via BlobStore.
-        return f"policy_index/{name}"
+        # Version/hash-namespaced layout: policy_index/{namespace}/{name}
+        # Falls back to legacy flat policy_index/{name} when no namespace is set
+        # (only for reading during migration; writes always use a namespace when available).
+        ns = (self.config.get("policy_index_namespace") or "").strip()
+        if not ns:
+            # Derive from file hash when path exists so activations don't collide.
+            path = Path(self.path)
+            if path.exists():
+                ns = hashlib.sha256(path.read_bytes()).hexdigest()[:32]
+                self.config["policy_index_namespace"] = ns
+            else:
+                return f"policy_index/{name}"
+        return f"policy_index/{ns}/{name}"
 
     def _blob_read_json(self, name: str) -> dict | list | None:
         key = self._index_key(name)
