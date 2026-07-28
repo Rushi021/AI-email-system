@@ -19,6 +19,7 @@ from src.evaluator import evaluate_generated
 from src.generator import generate_reply
 from src.policy_store import PolicyStore
 from src.queue_store import DECISION_WEIGHT
+from src.ragas_evaluator import check_retrieval_disagreement, should_gate_from_auto
 from src.retriever import TicketRetriever
 from src.schema import IncomingEmail, Ticket, detect_order_id, placeholder_transaction
 
@@ -129,6 +130,48 @@ def route_email(
         f for f in ev.flags
         if not f.startswith("gated_from_auto") and not f.startswith("scoring_error")
     ]
+    provisional = _decide(
+        confidence,
+        hard_flags,
+        ev.escalate,
+        ev.gated_from_auto,
+        t1,
+        t2,
+    )
+    # Fail closed: never AUTO without a completed disagreement check.
+    if provisional == "auto" and not ev.disagreement_checked:
+        topk_rule = gen.remedy.rule_cited or (gen.cited_rule_ids[0] if gen.cited_rule_ids else "")
+        disagree = check_retrieval_disagreement(
+            text,
+            txn,
+            policy_store,
+            topk_rule,
+            sample_rate=1.0,
+            response_id=gen.response_id,
+            force=True,
+        )
+        ev.disagreement_checked = bool(disagree.get("disagreement_checked"))
+        ev.retrieval_disagreement = disagree.get("retrieval_disagreement")
+        ev.topk_rule = disagree.get("topk_rule") or ""
+        ev.full_doc_rule = disagree.get("full_doc_rule") or ""
+        if not ev.disagreement_checked or ev.retrieval_disagreement is True:
+            ev.gated_from_auto = True
+            if "retrieval_disagreement" not in ev.flags and ev.retrieval_disagreement is True:
+                ev.flags = list(ev.flags) + ["retrieval_disagreement"]
+            if not ev.disagreement_checked and "disagreement_unchecked" not in ev.flags:
+                ev.flags = list(ev.flags) + ["disagreement_unchecked"]
+                hard_flags = [
+                    f for f in ev.flags
+                    if not f.startswith("gated_from_auto") and not f.startswith("scoring_error")
+                ]
+        elif should_gate_from_auto(
+            float(ev.faithfulness) if ev.faithfulness is not None else None,
+            ev.retrieval_disagreement,
+            scoring_error=ev.scoring_error or "",
+            faithfulness_gate=float(cfg.get("faithfulness_gate", 0.7)),
+        ):
+            ev.gated_from_auto = True
+
     decision = _decide(
         confidence,
         hard_flags,
@@ -137,6 +180,11 @@ def route_email(
         t1,
         t2,
     )
+    if decision == "auto" and not ev.disagreement_checked:
+        decision = "review"
+        ev.gated_from_auto = True
+        if "disagreement_unchecked" not in ev.flags:
+            ev.flags = list(ev.flags) + ["disagreement_unchecked"]
     decision = _apply_disable_auto_for_bundle(decision, disable_auto_for_bundle)
     audit = decision == "auto" and _audit_sample(
         gen.response_id, float(cfg.get("audit_sample_rate", 0.05))
