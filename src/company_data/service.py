@@ -506,15 +506,8 @@ def _assemble_bundle(
     if include_user_examples:
         corpus_tickets = tickets + user_examples_as_tickets()
 
-    if corpus_tickets:
-        retriever = TicketRetriever(corpus_tickets)
-    else:
-        # Main TicketRetriever rejects empty corpora; stub until the empty-corpus fix.
-        class _EmptyRetriever:
-            def top_k(self, *a, **k):
-                return []
-
-        retriever = _EmptyRetriever()
+    weak = bool(quality.get("weak_tone_corpus", True))
+    retriever = TicketRetriever(corpus_tickets, disable_neighbors=weak)
 
     return CompanyBundle(
         version_id=version_id,
@@ -553,6 +546,8 @@ def _empty_bundle() -> CompanyBundle:
         def top_k(self, *a, **k):
             return []
 
+    from src.retriever import TicketRetriever
+
     empty = _Empty()
     return CompanyBundle(
         version_id="",
@@ -560,7 +555,7 @@ def _empty_bundle() -> CompanyBundle:
         tickets=[],
         policy_path="",
         policy_store=empty,
-        retriever=empty,
+        retriever=TicketRetriever([], disable_neighbors=True),
         transaction_missing_fields={},
         quality=dict(_EMPTY_QUALITY),
         ready=False,
