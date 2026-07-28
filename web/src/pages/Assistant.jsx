@@ -20,7 +20,7 @@ function Metric({ label, value }) {
 }
 
 export default function Assistant() {
-  const { orders, setup_required } = useApp();
+  const { orders, setup_required, company_data_version } = useApp();
   const [email, setEmail] = useState("");
   const [order, setOrder] = useState(NO_ORDER);
   const [busy, setBusy] = useState(false);
@@ -32,7 +32,11 @@ export default function Assistant() {
   async function suggest() {
     setBusy(true); setError(""); setEvalRes(null);
     try {
-      const r = await api.post("/assistant/suggest", { email, order_id: order || null });
+      const r = await api.post("/assistant/suggest", {
+        email,
+        order_id: order || null,
+        company_data_version: company_data_version || null,
+      });
       setResult(r);
       if (r.detected_order_id) setOrder(r.detected_order_id);
     } catch (e) { setError(e.message); }
@@ -43,7 +47,10 @@ export default function Assistant() {
     setEvalBusy(true);
     try {
       setEvalRes(await api.post("/assistant/evaluate", {
-        email, order_id: result.order_id || null, gen: result.gen,
+        email,
+        order_id: result.order_id || null,
+        gen: result.gen,
+        company_data_version: result.company_data_version || company_data_version || null,
       }));
     } catch (e) { setError(e.message); }
     setEvalBusy(false);

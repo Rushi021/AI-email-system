@@ -142,6 +142,7 @@ def bootstrap():
 class SuggestReq(BaseModel):
     email: str
     order_id: str | None = None
+    company_data_version: str | None = None
 
 
 @app.post("/api/assistant/suggest")
@@ -149,6 +150,9 @@ def assistant_suggest(req: SuggestReq):
     if not req.email.strip():
         raise HTTPException(400, "email is required")
     r = _resources()
+    bundle = r["bundle"]
+    if req.company_data_version and req.company_data_version != bundle.version_id:
+        raise HTTPException(409, "Company data changed — reload and try again.")
     txns = r["transactions"]
     detected = detect_order_id(req.email, txns)
     order_id = req.order_id or detected
@@ -158,6 +162,7 @@ def assistant_suggest(req: SuggestReq):
         "detected_order_id": detected,
         "order_id": order_id or "",
         "gen": gen.model_dump(),
+        "company_data_version": bundle.version_id,
     }
 
 
@@ -165,11 +170,15 @@ class EvalReq(BaseModel):
     email: str
     order_id: str | None = None
     gen: dict  # a GeneratedReply.model_dump() from /suggest
+    company_data_version: str | None = None
 
 
 @app.post("/api/assistant/evaluate")
 def assistant_evaluate(req: EvalReq):
     r = _resources()
+    bundle = r["bundle"]
+    if req.company_data_version and req.company_data_version != bundle.version_id:
+        raise HTTPException(409, "Company data changed — reload and try again.")
     txn = _txn_for(req.order_id)
     gen = GeneratedReply(**req.gen)
     live = Ticket(
@@ -182,7 +191,9 @@ def assistant_evaluate(req: EvalReq):
         actual_reply=gen.reply,
     )
     ev = evaluate_generated(live, txn, gen, r["policy_store"])
-    return ev.model_dump()
+    out = ev.model_dump()
+    out["company_data_version"] = bundle.version_id
+    return out
 
 
 # ========================================================================= Inbox
@@ -204,7 +215,13 @@ def inbox_sync(req: SyncReq):
     except Exception as exc:  # connector/credentials problem — surface, don't crash
         raise HTTPException(502, f"{type(exc).__name__}: {exc}")
     if not emails:
-        return {"fetched": 0, "tally": {}, "failed": [], "digest": None}
+        return {
+            "fetched": 0,
+            "tally": {},
+            "failed": [],
+            "digest": None,
+            "company_data_version": bundle.version_id,
+        }
 
     for e in emails:
         event_bus.publish(parse_email(e))
@@ -241,6 +258,7 @@ def inbox_sync(req: SyncReq):
         "failed": failed,
         "max_attempts": event_bus.MAX_ATTEMPTS,
         "digest": digest,
+        "company_data_version": bundle.version_id,
     }
 
 
