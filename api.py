@@ -672,6 +672,22 @@ def company_data_activate(req: ActivateReq):
     }
 
 
+class RollbackReq(BaseModel):
+    version_id: str
+
+
+@app.post("/api/settings/company-data/rollback")
+def company_data_rollback(req: RollbackReq):
+    try:
+        bundle = company_data.rollback(req.version_id, config=load_config())
+    except FileNotFoundError:
+        raise HTTPException(404, f"version not found: {req.version_id}")
+    except Exception as exc:
+        raise HTTPException(400, f"{type(exc).__name__}: {exc}")
+    _set_cache(bundle)
+    return {"ok": True, "version_id": bundle.version_id, "status": company_data.status()}
+
+
 @app.post("/api/settings/policy")
 async def settings_policy(file: UploadFile):
     """Replace policy while keeping the active transactions/tickets version."""

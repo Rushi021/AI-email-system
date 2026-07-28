@@ -10,6 +10,7 @@ from src.company_data.schema import FieldMapping
 from src.company_data.service import (
     activate_staged,
     load_active_company_bundle,
+    rollback,
     stage_upload,
     status,
 )
@@ -228,3 +229,44 @@ def test_dataset_warnings_never_in_ev_flags():
     # File-level advisories must never be copied into per-email flags.
     from src.company_data.schema import FIELD_FLAG_MAP
     assert "weak:tone_corpus" not in FIELD_FLAG_MAP.values()
+
+
+def test_activate_and_rollback_restores_index(isolated_blob, tmp_path):
+    pol = _minimal_policy_md(tmp_path)
+    txn1 = _stage_text(
+        tmp_path,
+        "t1.csv",
+        "order_id,customer_id,price,order_date,status\nO1,C1,10,2026-01-15,delivered\n",
+        "transactions",
+    )
+    cfg = {"use_embeddings": False, "policy_llm_chunking": False}
+    b1 = activate_staged(
+        {
+            "policy": {"token": pol["token"], "mapping": {}, "file_hash": pol["file_hash"]},
+            "transactions": {"token": txn1["token"], "mapping": _txn_mapping(), "file_hash": txn1["file_hash"]},
+        },
+        confirm_degraded=True,
+        config=cfg,
+    )
+    v1 = b1.version_id
+    txn2 = _stage_text(
+        tmp_path,
+        "t2.csv",
+        "order_id,customer_id,price,order_date,status\nO2,C2,20,2026-02-15,delivered\n",
+        "transactions",
+    )
+    pol2 = _minimal_policy_md(tmp_path)
+    activate_staged(
+        {
+            "policy": {"token": pol2["token"], "mapping": {}, "file_hash": pol2["file_hash"]},
+            "transactions": {"token": txn2["token"], "mapping": _txn_mapping(), "file_hash": txn2["file_hash"]},
+        },
+        confirm_degraded=True,
+        config=cfg,
+    )
+    rolled = rollback(v1, config=cfg)
+    assert rolled.version_id == v1
+    assert "O1" in rolled.transactions
+    assert "O2" not in rolled.transactions
+    assert len(rolled.policy_store.rules) >= 2
+    assert rolled.policy_store.retrieve("refund", k=1)
