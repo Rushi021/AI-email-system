@@ -15,6 +15,7 @@ import hashlib
 
 from src.classifier import classify
 from src.company_data.quality import compute_email_quality_flags, rules_index
+from src.company_data import routing_metrics
 from src.config import DEFAULTS, load_config
 from src.evaluator import evaluate_generated
 from src.generator import generate_reply
@@ -66,6 +67,7 @@ def route_email(
     *,
     transaction_missing_fields: dict | None = None,
     company_data_version: str = "",
+    degraded_bundle: bool = False,
 ) -> dict:
     cfg = {**DEFAULTS, **load_config(), **(config or {})}
     t1, t2 = float(cfg["t1"]), float(cfg["t2"])
@@ -204,6 +206,9 @@ def route_email(
     audit = decision == "auto" and _audit_sample(
         gen.response_id, float(cfg.get("audit_sample_rate", 0.05))
     )
+
+    if degraded_bundle:
+        routing_metrics.record(decision, list(ev.flags))
 
     ragas_snap = {
         "faithfulness": ev.faithfulness,

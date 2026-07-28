@@ -218,6 +218,7 @@ def inbox_sync(req: SyncReq):
             cfg,
             transaction_missing_fields=bundle.transaction_missing_fields,
             company_data_version=bundle.version_id,
+            degraded_bundle=(bundle.quality or {}).get("txn_verdict") == "DEGRADED",
         )
         queue_store.upsert(item)
         return item
@@ -272,6 +273,7 @@ def inbox_route_one(req: RouteOneReq):
             cfg,
             transaction_missing_fields=bundle.transaction_missing_fields,
             company_data_version=bundle.version_id,
+            degraded_bundle=(bundle.quality or {}).get("txn_verdict") == "DEGRADED",
         )
         queue_store.upsert(item)
     except Exception as exc:
