@@ -27,9 +27,12 @@ Vite dev server is only for hot-reload development.
 
 The Assistant and Inbox pages need an LLM key (set one in `.env` or on the
 Settings page) **and** an activated company-data bundle (Settings → Company data:
-policy + transactions). Review and Evaluation work without an LLM key. The
-`demo` email source is an empty offline inbox — point `email_source` at `mcp`
-(Settings) to fetch real mail.
+policy + transactions). Sample files for a local trial live at
+`../tests/fixtures/northpeak/` — upload them through Settings (preferred), or copy
+them into a local `../data/` folder for a one-time legacy bootstrap (those paths
+are gitignored). Review and Evaluation work without an LLM key. The `demo` email
+source is an empty offline inbox — point `email_source` at `mcp` (Settings) to
+fetch real mail.
 
 ## Design
 

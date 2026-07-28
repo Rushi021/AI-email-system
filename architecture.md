@@ -47,6 +47,10 @@ Policy + transactions are required. Ticket history is optional (tone only).
 Per-email `unverifiable:*` flags gate AUTO only when a used policy rule depends on
 a field marked missing on that transaction — never file-wide.
 
+Tracked sample inputs: `tests/fixtures/northpeak/` (upload via Settings). Demo
+files are not shipped under `data/` — that folder is local-only / gitignored for
+an optional one-time legacy bootstrap (see `data/README.md`).
+
 ---
 
 ## Live pipeline (12 stages)
@@ -167,6 +171,9 @@ Company data: BlobStore `company/versions/*`, `company/active.json`.
 
 | Module | Role |
 |---|---|
+| `tests/fixtures/northpeak/` | Tracked sample policy + transactions + tickets (upload via Settings) |
+| `data/README.md` | Local-only legacy bootstrap notes (company files gitignored) |
+| `scripts/dev/build_policy_pdf.py` | Optional helper to rebuild the sample policy PDF |
 | `src/company_data/` | Upload preview · dry-run · normalize · activate · rollback |
 | `src/email_source.py` | Inbox connector (`demo` \| `mcp`) |
 | `src/email_parser.py` | Normalize body + auth signal |

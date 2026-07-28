@@ -352,7 +352,7 @@ function CompanyDataSection({ data, busy, run, setError, setFlash }) {
       title="Company data"
       note={
         cd.setup_required
-          ? "Setup required: upload a policy document and a transactions file, map columns, dry-run, then activate."
+          ? "Setup required: upload a policy document and a transactions file, map columns, dry-run, then activate. Sample files for local trials: tests/fixtures/northpeak/."
           : `Active version ${cd.active_version || "—"} · ${(cd.advisories || []).join(" · ") || "ready"}`
       }
     >

@@ -144,7 +144,8 @@
       an uploaded <strong>company-data bundle</strong>, scored with <strong>two unblended numbers</strong> —
       RAGAS response quality (Tier&nbsp;1) and human-feedback reliability (Tier&nbsp;2) — then
       routed AUTO / REVIEW / ESCALATE / IGNORE. Nothing company-specific lives in
-      <code>src/</code>.
+      <code>src/</code>. Sample fixtures: <code>tests/fixtures/northpeak/</code>
+      (not shipped under <code>data/</code>).
     </p>
     <div class="legend">
       <span><i class="dot t"></i> Transport / control</span>
@@ -557,8 +558,10 @@ flowchart LR
         <div class="k">Company-agnostic</div>
         <h4>Everything company-specific is uploaded</h4>
         <p>Activate a policy document, transactions export, and optional ticket history
-          through Settings — zero code changes. No hardcoded rule IDs, product
-          names, or remedies in <code>src/</code>, prompts, or the router.</p>
+          through Settings — zero code changes. Sample fixtures live under
+          <code>tests/fixtures/northpeak/</code>; demo files are not shipped under
+          <code>data/</code>. No hardcoded rule IDs, product names, or remedies in
+          <code>src/</code>, prompts, or the router.</p>
       </div>
     </div>
   </section>

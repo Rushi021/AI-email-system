@@ -71,7 +71,8 @@ Company data: uploaded via Settings → versioned under company/ in BlobStore
 
 ## 1. Quick start (batch pipeline)
 
-Setup is the same as "How to run & access the app" above; then:
+Setup is the same as "How to run & access the app" above. Activate company data
+first (Settings → Company data, or upload the sample fixtures — see §3), then:
 
 ```bash
 python pipeline.py --all      # generate → RAGAS evaluate → reliability report
@@ -117,12 +118,28 @@ That is the point of the design: this is a *product*, not a demo hard-coded to o
 
 ## 3. Sample fixtures (optional)
 
-A fictional outdoor-retailer fixture set lives under `tests/fixtures/northpeak/` for
-tests and local trials. Upload those files through Settings → Company data, or leave
-copies in `data/` for a one-time legacy bootstrap when no active bundle exists.
-Production deployments should upload their own policy and order export.
+Demo company files are **not** shipped under `data/` anymore. The only tracked sample
+set is:
 
-Dev-only PDF helper: `scripts/dev/build_policy_pdf.py`.
+```
+tests/fixtures/northpeak/
+  policy.pdf
+  transactions.json
+  dataset.json          # optional past tickets (corpus + holdout)
+```
+
+**How to use them**
+
+1. **Preferred:** Settings → Company data → upload `policy.pdf` + `transactions.json`
+   (and optionally `dataset.json` as tickets) → map columns → dry-run → activate.
+2. **One-time legacy bootstrap:** copy those three files into a local `data/` folder
+   (`policy.*` + `transactions.json` required; `dataset.json` optional). On first boot
+   with no `company/active.json`, the app imports them once. `data/*` company files are
+   gitignored — they never re-enter the repo.
+
+Production deployments should upload their own policy and order export. To regenerate
+the sample policy PDF from markdown, use the dev-only helper
+`scripts/dev/build_policy_pdf.py` (not part of the runtime path).
 
 **Holdout is never retrievable.** Ticket `split` defaults to `corpus`. A ticket becomes
 holdout only when a split column is explicitly mapped *and* carries a recognized holdout
@@ -257,8 +274,9 @@ inbox (MCP email server | offline demo)  ── src/email_source.py ──► In
 ## 7. Repo map
 
 ```
-scripts/dev/build_policy_pdf.py  optional fixture PDF helper
-tests/fixtures/northpeak/        sample policy + txn + tickets for local trials
+tests/fixtures/northpeak/        tracked sample policy + txn + tickets (upload via Settings)
+scripts/dev/build_policy_pdf.py  optional helper to rebuild the sample policy PDF
+data/README.md                   explains local-only legacy bootstrap (company files gitignored)
 src/company_data/                upload preview · dry-run · normalize · activate · rollback
 src/policy_ingest.py             PDF/DOCX/Markdown/txt → sections + depends_on
 src/policy_store.py              hybrid BM25 + embeddings + RRF (versioned BlobStore index)
@@ -283,15 +301,16 @@ pipeline.py                   batch CLI: --all | --generate | --evaluate | --val
 api.py                        FastAPI JSON wrapper over src/ (serves web/dist + SPA fallback)
 src/app_data.py               app-level data helpers (env, user examples) shared by api.py
 web/                          React + Vite frontend (Assistant · Inbox · Review · Settings · Evaluation)
+company/                      active + versioned company-data blobs (gitignored; BlobStore)
 results/                      local runtime only (gitignored; empty on a fresh clone)
 ```
 
 ## 8. Future implementation — from assistant to autonomous support layer
 
 Everything below builds on what already exists: the company-agnostic RAG core, the
-**validated accuracy metric**, and the swap-the-data-files design. The metric is the key —
-it stops being a report card and becomes the **control system** that decides how much
-autonomy the product is allowed.
+**validated accuracy metric**, and Settings-uploaded company-data bundles. The metric is
+the key — it stops being a report card and becomes the **control system** that decides how
+much autonomy the product is allowed.
 
 ### Target architecture
 
@@ -379,9 +398,10 @@ Details of what shipped:
    sizing?", "do you ship to X?", "where is my invoice?") don't need a remedies policy —
    they need an *operational information document*: shipping matrices, store hours, product
    FAQs, account procedures. Because the whole pipeline is document-agnostic, this is
-   literally a second PDF in `data/` and a routing rule: the compliance judge's question
-   changes from "did the reply offer the required remedy?" to "is every stated fact
-   present in the operational document?" — same structure, same validation method.
+   literally a second uploaded policy document in the company-data bundle and a routing
+   rule: the compliance judge's question changes from "did the reply offer the required
+   remedy?" to "is every stated fact present in the operational document?" — same
+   structure, same validation method.
 
 6. **Multi-document / versioned policy store.** Hybrid BM25 + embeddings + RRF (with
    section-hash incremental reindexing) is already in place. Next: a **versioned
