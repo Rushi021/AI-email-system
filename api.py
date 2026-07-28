@@ -20,7 +20,6 @@ from pydantic import BaseModel
 
 from src import email_source, event_bus, feedback, llm_client, notify, queue_store, router
 from src.app_data import (
-    DATA,
     PROVIDER_KEY_VARS,
     RESULTS,
     load_user_examples,
@@ -29,6 +28,8 @@ from src.app_data import (
 )
 from src.classifier import CATEGORY_LABELS
 from src.company_data import service as company_data
+from src.company_data.mapping import canonical_fields_for
+from src.company_data.schema import FieldMapping
 from src.config import DEFAULTS, load_config, save_config
 from src.evaluator import evaluate_generated
 from src.generator import generate_reply
@@ -50,6 +51,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+ALLOWED_TABULAR = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".json"}
+ALLOWED_POLICY = {".pdf", ".docx", ".md", ".markdown", ".txt", ".text"}
 
 # Cached active company bundle. Cleared when policy / examples / config change.
 _CACHE: dict | None = None
@@ -80,6 +85,19 @@ def _resources(*, require_ready: bool = True):
             "Company data setup required — activate policy + transactions first.",
         )
     return _CACHE
+
+
+def _set_cache(bundle, cfg: dict | None = None) -> None:
+    global _CACHE
+    cfg = cfg or load_config()
+    _CACHE = {
+        "bundle": bundle,
+        "config": cfg,
+        "transactions": bundle.transactions,
+        "tickets": bundle.tickets,
+        "policy_store": bundle.policy_store,
+        "retriever": bundle.retriever,
+    }
 
 
 def _clear_resources() -> None:
@@ -441,6 +459,11 @@ def settings_get():
         "category_labels": CATEGORY_LABELS,
         "examples": load_user_examples(),
         "defaults": DEFAULTS,
+        "canonical_fields": {
+            "transactions": canonical_fields_for("transactions"),
+            "tickets": canonical_fields_for("tickets"),
+        },
+        "company_data": company_data.status(),
     }
 
 
@@ -528,27 +551,186 @@ def settings_examples(req: ExamplesReq):
     return {"ok": True, "examples": load_user_examples()}
 
 
+@app.get("/api/settings/company-data")
+def company_data_status():
+    return company_data.status()
+
+
+@app.post("/api/settings/company-data/stage")
+async def company_data_stage(file: UploadFile, target: str):
+    if target not in ("policy", "transactions", "tickets"):
+        raise HTTPException(400, f"unknown target {target}")
+    suffix = Path(file.filename or "").suffix.lower()
+    allowed = ALLOWED_POLICY if target == "policy" else ALLOWED_TABULAR
+    if suffix not in allowed:
+        raise HTTPException(400, f"unsupported extension {suffix}; allowed: {sorted(allowed)}")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, f"file too large (max {MAX_UPLOAD_BYTES} bytes)")
+    if not raw:
+        raise HTTPException(400, "empty file")
+    try:
+        meta = company_data.stage_upload(
+            raw, filename=file.filename or f"{target}{suffix}", target=target
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"{type(exc).__name__}: {exc}")
+    return {"ok": True, **{k: v for k, v in meta.items() if k != "local_path"}}
+
+
+@app.get("/api/settings/company-data/preview/{token}")
+def company_data_preview(token: str, sheet: str | None = None):
+    try:
+        prev = company_data.preview_staged(token, sheet=sheet)
+    except FileNotFoundError:
+        raise HTTPException(404, "staging token not found")
+    except Exception as exc:
+        raise HTTPException(400, f"{type(exc).__name__}: {exc}")
+    return prev.to_dict()
+
+
+class DryRunReq(BaseModel):
+    mapping: dict = {}
+    file_hash: str | None = None
+
+
+@app.post("/api/settings/company-data/dry-run/{token}")
+def company_data_dry_run(token: str, req: DryRunReq):
+    try:
+        meta = company_data._staging_meta(token)  # noqa: SLF001
+        if req.file_hash and req.file_hash != meta.get("file_hash"):
+            raise HTTPException(400, "file_hash mismatch — restage the upload")
+        result = company_data.dry_run_staged(token, FieldMapping.from_dict(req.mapping))
+    except HTTPException:
+        raise
+    except FileNotFoundError:
+        raise HTTPException(404, "staging token not found")
+    except Exception as exc:
+        raise HTTPException(400, f"{type(exc).__name__}: {exc}")
+    return result.to_dict()
+
+
+class ActivateAsset(BaseModel):
+    token: str
+    mapping: dict = {}
+    file_hash: str | None = None
+
+
+class ActivateReq(BaseModel):
+    policy: ActivateAsset
+    transactions: ActivateAsset
+    tickets: ActivateAsset | None = None
+    confirm_degraded: bool = False
+
+
+@app.post("/api/settings/company-data/activate")
+def company_data_activate(req: ActivateReq):
+    assets = {
+        "policy": {
+            "token": req.policy.token,
+            "mapping": req.policy.mapping,
+            "file_hash": req.policy.file_hash,
+        },
+        "transactions": {
+            "token": req.transactions.token,
+            "mapping": req.transactions.mapping,
+            "file_hash": req.transactions.file_hash,
+        },
+    }
+    if req.tickets:
+        assets["tickets"] = {
+            "token": req.tickets.token,
+            "mapping": req.tickets.mapping,
+            "file_hash": req.tickets.file_hash,
+        }
+    try:
+        bundle = company_data.activate_staged(
+            assets,
+            confirm_degraded=req.confirm_degraded,
+            config=load_config(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+    _set_cache(bundle)
+    return {
+        "ok": True,
+        "version_id": bundle.version_id,
+        "quality": bundle.quality,
+        "status": company_data.status(),
+    }
+
+
 @app.post("/api/settings/policy")
 async def settings_policy(file: UploadFile):
+    """Replace policy while keeping the active transactions/tickets version."""
+    setup = company_data.status()
+    if setup.get("setup_required"):
+        raise HTTPException(
+            409,
+            "No active company data yet — use Company Data setup to upload policy and transactions together.",
+        )
     suffix = Path(file.filename or "policy.pdf").suffix.lower() or ".pdf"
-    new_name = f"policy{suffix}"
+    if suffix not in ALLOWED_POLICY:
+        raise HTTPException(400, f"unsupported policy extension {suffix}")
     raw = await file.read()
-    (DATA / new_name).write_bytes(raw)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "file too large")
     try:
-        from src.storage.factory import get_blob_store
-        get_blob_store().put(f"policy/{new_name}", raw)
-    except Exception:
-        pass
-    for p in DATA.glob("policy.*"):
-        if p.name != new_name:
-            try:
-                p.unlink()
-            except OSError:
-                pass
-    save_config({"policy_filename": new_name})
-    _clear_resources()
-    ps = _resources()["policy_store"]
-    return {"ok": True, "filename": new_name, "rules": len(ps.rules)}
+        from src.company_data.service import VERSIONS_PREFIX, _blob
+
+        pol = company_data.stage_upload(raw, filename=f"policy{suffix}", target="policy")
+        active = setup["active_version"]
+        blob = _blob()
+        manifest = json.loads(blob.get(f"{VERSIONS_PREFIX}/{active}/manifest.json").decode())
+        txn_info = (manifest.get("assets") or {}).get("transactions") or {}
+        txn_key = f"{VERSIONS_PREFIX}/{active}/source/transactions/{txn_info.get('filename')}"
+        txn_source = blob.get(txn_key)
+        txn_stage = company_data.stage_upload(
+            txn_source,
+            filename=txn_info.get("filename") or "transactions.json",
+            target="transactions",
+        )
+        assets = {
+            "policy": {"token": pol["token"], "mapping": {}, "file_hash": pol["file_hash"]},
+            "transactions": {
+                "token": txn_stage["token"],
+                "mapping": txn_info.get("mapping") or {},
+                "file_hash": txn_stage["file_hash"],
+            },
+        }
+        tickets_info = (manifest.get("assets") or {}).get("tickets")
+        if tickets_info and tickets_info.get("count"):
+            tkeys = [
+                k
+                for k in blob.list(f"{VERSIONS_PREFIX}/{active}/source/tickets/")
+                if not k.endswith("/")
+            ]
+            if tkeys:
+                t_raw = blob.get(tkeys[0])
+                t_stage = company_data.stage_upload(
+                    t_raw, filename=Path(tkeys[0]).name, target="tickets"
+                )
+                assets["tickets"] = {
+                    "token": t_stage["token"],
+                    "mapping": tickets_info.get("mapping") or {},
+                    "file_hash": t_stage["file_hash"],
+                }
+        bundle = company_data.activate_staged(
+            assets,
+            confirm_degraded=True,
+            config=load_config(),
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"{type(exc).__name__}: {exc}")
+    _set_cache(bundle)
+    return {
+        "ok": True,
+        "filename": f"policy{suffix}",
+        "rules": len(bundle.policy_store.rules),
+        "version_id": bundle.version_id,
+    }
 
 
 # --------------------------------------------------------- serve built frontend
