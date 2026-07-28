@@ -55,12 +55,21 @@ def _audit_sample(response_id: str, rate: float) -> bool:
     return bucket < int(rate * 1000)
 
 
+def _apply_disable_auto_for_bundle(decision: str, disable_auto_for_bundle: bool) -> str:
+    """Interim DEGRADED gate — boolean only; never writes into ev.flags."""
+    if disable_auto_for_bundle and decision != "ignore":
+        return "review"
+    return decision
+
+
 def route_email(
     email: IncomingEmail,
     transactions: dict,
     policy_store: PolicyStore,
     retriever: TicketRetriever,
     config: dict | None = None,
+    *,
+    disable_auto_for_bundle: bool = False,
 ) -> dict:
     cfg = {**DEFAULTS, **load_config(), **(config or {})}
     t1, t2 = float(cfg["t1"]), float(cfg["t2"])
@@ -128,6 +137,7 @@ def route_email(
         t1,
         t2,
     )
+    decision = _apply_disable_auto_for_bundle(decision, disable_auto_for_bundle)
     audit = decision == "auto" and _audit_sample(
         gen.response_id, float(cfg.get("audit_sample_rate", 0.05))
     )
@@ -180,6 +190,10 @@ def _demo() -> None:
     assert _decide(95, ["order_id_not_referenced (-4)"], False, False, 80, 50) == "review"
     assert _decide(65, [], False, False, 80, 50) == "review"
     assert _priority("escalate", 249, True) > _priority("review", 999, True)
+    assert _apply_disable_auto_for_bundle("auto", True) == "review"
+    assert _apply_disable_auto_for_bundle("escalate", True) == "review"
+    assert _apply_disable_auto_for_bundle("ignore", True) == "ignore"
+    assert _apply_disable_auto_for_bundle("auto", False) == "auto"
     print("router self-check OK")
 
 

@@ -175,3 +175,12 @@ def test_failed_activation_leaves_active_unchanged(isolated_blob, tmp_path):
             config=cfg,
         )
     assert status()["active_version"] == active
+
+
+def test_disable_auto_hook_forces_review_not_flags():
+    from src.router import _apply_disable_auto_for_bundle
+
+    assert _apply_disable_auto_for_bundle("auto", True) == "review"
+    assert _apply_disable_auto_for_bundle("escalate", True) == "review"
+    assert _apply_disable_auto_for_bundle("ignore", True) == "ignore"
+    assert _apply_disable_auto_for_bundle("auto", False) == "auto"

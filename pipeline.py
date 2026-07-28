@@ -18,26 +18,26 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from src.company_data.service import load_active_company_bundle
+from src.config import load_config
 from src.evaluator import evaluate_generated
 from src.generator import generate_reply
-from src.policy_store import PolicyStore
-from src.retriever import TicketRetriever
-from src.schema import Ticket, Transaction
 from src.storage.factory import get_blob_store
 from src.validate_metric import validate
 
-DATA = Path("data")
 RESULTS = Path("results")
 console = Console()
 
 
 def load_data():
-    transactions = {
-        t["order_id"]: Transaction(**t)
-        for t in json.loads((DATA / "transactions.json").read_text())
-    }
-    tickets = [Ticket(**t) for t in json.loads((DATA / "dataset.json").read_text())]
-    return transactions, tickets
+    """Load the active company bundle (no hardcoded data/ paths)."""
+    cfg = load_config()
+    bundle = load_active_company_bundle(
+        allow_empty=False,
+        config=cfg,
+        include_user_examples=False,  # batch eval never includes Settings examples
+    )
+    return bundle
 
 
 def _put_json(key: str, obj) -> None:
@@ -63,17 +63,31 @@ def _get_json(key: str):
         raise
 
 
-def run_generate(transactions, tickets, limit: int = 0) -> list[dict]:
-    from src.policy_store import resolve_policy_path
+def run_generate(bundle, limit: int = 0) -> list[dict]:
+    transactions = bundle.transactions
+    tickets = bundle.tickets
+    policy_store = bundle.policy_store
+    retriever = bundle.retriever
 
-    policy_store = PolicyStore(str(resolve_policy_path(DATA)))
-    retriever = TicketRetriever(tickets)
     holdout = [t for t in tickets if t.split == "holdout"]
+    # Exclude holdout tickets whose order link was cleared (unknown order_id).
+    runnable = []
+    skipped = []
+    for t in holdout:
+        if not t.order_id or t.order_id not in transactions:
+            skipped.append(t.ticket_id)
+            continue
+        runnable.append(t)
+    if skipped:
+        console.print(
+            f"[yellow]skipping {len(skipped)} holdout ticket(s) with unlinked/missing orders: "
+            f"{', '.join(skipped[:8])}{'…' if len(skipped) > 8 else ''}[/]"
+        )
     if limit:
-        holdout = holdout[:limit]
+        runnable = runnable[:limit]
 
     generated = []
-    for t in holdout:
+    for t in runnable:
         console.print(f"  generating reply for [bold]{t.ticket_id}[/] ({t.category})...")
         g = generate_reply(
             t.incoming_email,
@@ -83,25 +97,32 @@ def run_generate(transactions, tickets, limit: int = 0) -> list[dict]:
             ticket_id=t.ticket_id,
             category=t.category,
         )
-        generated.append(g.model_dump())
+        dump = g.model_dump()
+        dump["company_data_version"] = bundle.version_id
+        generated.append(dump)
 
     _put_json("results/generated_replies.json", generated)
     console.print(f"[green]wrote results/generated_replies.json ({len(generated)} replies)[/]")
     return generated
 
 
-def run_evaluate(transactions, tickets, limit: int = 0) -> list[dict]:
-    from src.policy_store import resolve_policy_path
-
-    policy_store = PolicyStore(str(resolve_policy_path(DATA)))
-    tickets_by_id = {t.ticket_id: t for t in tickets}
+def run_evaluate(bundle, limit: int = 0) -> list[dict]:
+    transactions = bundle.transactions
+    tickets_by_id = {t.ticket_id: t for t in bundle.tickets}
+    policy_store = bundle.policy_store
     generated = _get_json("results/generated_replies.json")
     if limit:
         generated = generated[:limit]
 
     results = []
     for g in generated:
-        t = tickets_by_id[g["ticket_id"]]
+        t = tickets_by_id.get(g["ticket_id"])
+        if t is None:
+            console.print(f"[yellow]skip unknown ticket {g['ticket_id']}[/]")
+            continue
+        if not t.order_id or t.order_id not in transactions:
+            console.print(f"[yellow]skip {t.ticket_id}: no transaction[/]")
+            continue
         console.print(f"  RAGAS-scoring reply for [bold]{t.ticket_id}[/]...")
         from src.schema import GeneratedReply, Remedy
 
@@ -116,7 +137,9 @@ def run_evaluate(transactions, tickets, limit: int = 0) -> list[dict]:
             retrieved_similar_tickets=g.get("retrieved_similar_tickets") or [],
         )
         r = evaluate_generated(t, transactions[t.order_id], gen, policy_store)
-        results.append(r.model_dump())
+        dump = r.model_dump()
+        dump["company_data_version"] = bundle.version_id
+        results.append(dump)
 
     _put_json("results/evaluation_results.json", results)
     console.print(f"[green]wrote results/evaluation_results.json ({len(results)} evaluations)[/]")
@@ -197,15 +220,22 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    transactions, tickets = load_data()
+    try:
+        bundle = load_data()
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        console.print("Complete company-data setup in Settings (policy + transactions) first.")
+        sys.exit(2)
+
+    console.print(f"Active company data version: [bold]{bundle.version_id}[/]")
 
     results = None
     if args.all or args.generate:
         console.rule("[bold]1. Generate")
-        run_generate(transactions, tickets, limit=args.limit)
+        run_generate(bundle, limit=args.limit)
     if args.all or args.evaluate:
         console.rule("[bold]2. Evaluate (RAGAS)")
-        results = run_evaluate(transactions, tickets, limit=args.limit)
+        results = run_evaluate(bundle, limit=args.limit)
     if args.all or args.validate:
         console.rule("[bold]3. Reliability report")
         report = run_validate()

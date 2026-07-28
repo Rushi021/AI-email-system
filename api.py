@@ -1,8 +1,7 @@
 """FastAPI backend for the React frontend.
 
 Thin JSON wrapper over the existing `src/` pipeline — nothing company-specific
-lives here (every fact is still read from data/ at runtime). Mirrors exactly what
-the Streamlit views did; the React app is a drop-in replacement for the UI only.
+lives here (every fact is loaded from the active company-data bundle).
 
 Run: .venv/bin/uvicorn api:app --reload --port 8000
 """
@@ -20,15 +19,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src import email_source, event_bus, feedback, llm_client, notify, queue_store, router
-from src.classifier import CATEGORY_LABELS
-from src.config import DEFAULTS, load_config, save_config
-from src.evaluator import evaluate_generated
-from src.generator import generate_reply
-from src.policy_store import PolicyStore, resolve_policy_path
-from src.retriever import TicketRetriever
-from src.schema import GeneratedReply, IncomingEmail, Remedy, Ticket, Transaction, detect_order_id, placeholder_transaction
-from src.storage.factory import get_structured_store
-from src.validate_metric import build_reliability_report
 from src.app_data import (
     DATA,
     PROVIDER_KEY_VARS,
@@ -36,8 +26,22 @@ from src.app_data import (
     load_user_examples,
     save_user_examples,
     update_env,
-    user_examples_as_tickets,
 )
+from src.classifier import CATEGORY_LABELS
+from src.company_data import service as company_data
+from src.config import DEFAULTS, load_config, save_config
+from src.evaluator import evaluate_generated
+from src.generator import generate_reply
+from src.schema import (
+    GeneratedReply,
+    IncomingEmail,
+    Remedy,
+    Ticket,
+    detect_order_id,
+    placeholder_transaction,
+)
+from src.storage.factory import get_structured_store
+from src.validate_metric import build_reliability_report
 
 app = FastAPI(title="AI Suggested-Response API")
 app.add_middleware(
@@ -47,29 +51,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------------------------------------------------- pipeline resources
-# Replaces views.common.load_everything (which used @st.cache_resource). Cached in
-# a module global; cleared when policy or user examples change.
+# Cached active company bundle. Cleared when policy / examples / config change.
 _CACHE: dict | None = None
 
 
-def _resources():
+def _resources(*, require_ready: bool = True):
+    """Return the active company bundle (cached). Legacy data/ import runs once if needed."""
     global _CACHE
     if _CACHE is None:
         cfg = load_config()
-        transactions = {
-            t["order_id"]: Transaction(**t)
-            for t in json.loads((DATA / "transactions.json").read_text())
-        }
-        tickets = [Ticket(**t) for t in json.loads((DATA / "dataset.json").read_text())]
-        policy_store = PolicyStore(str(resolve_policy_path(DATA, cfg)), config=cfg)
-        retriever = TicketRetriever(tickets + user_examples_as_tickets())
+        bundle = company_data.load_active_company_bundle(
+            allow_empty=True,
+            config=cfg,
+            include_user_examples=True,
+        )
         _CACHE = {
-            "transactions": transactions,
-            "tickets": tickets,
-            "policy_store": policy_store,
-            "retriever": retriever,
+            "bundle": bundle,
+            "config": cfg,
+            "transactions": bundle.transactions,
+            "tickets": bundle.tickets,
+            "policy_store": bundle.policy_store,
+            "retriever": bundle.retriever,
         }
+    bundle = _CACHE["bundle"]
+    if require_ready and (bundle.setup_required or not bundle.ready):
+        raise HTTPException(
+            409,
+            "Company data setup required — activate policy + transactions first.",
+        )
     return _CACHE
 
 
@@ -85,15 +94,20 @@ def _txn_for(order_id: str | None):
     return placeholder_transaction()
 
 
+def _disable_auto_for_bundle(bundle) -> bool:
+    return bool((bundle.quality or {}).get("disable_auto_for_bundle"))
+
+
 # ============================================================== bootstrap / shared
 @app.get("/api/bootstrap")
 def bootstrap():
-    r = _resources()
+    r = _resources(require_ready=False)
+    bundle = r["bundle"]
     cfg = load_config()
     return {
         "orders": [
             {"order_id": oid, "product": t.product, "price": t.price, "status": t.status}
-            for oid, t in sorted(r["transactions"].items())
+            for oid, t in sorted(bundle.transactions.items())
         ],
         "config": {
             "email_source": cfg["email_source"],
@@ -101,8 +115,10 @@ def bootstrap():
             "t1": cfg["t1"],
             "t2": cfg["t2"],
         },
-        "categories": r["policy_store"].categories(),
+        "categories": bundle.policy_store.categories(),
         "queue_counts": queue_store.counts(),
+        "setup_required": bool(bundle.setup_required or not bundle.ready),
+        "company_data_version": bundle.version_id,
     }
 
 
@@ -165,7 +181,8 @@ def inbox_sync(req: SyncReq):
     from src.email_parser import parse as parse_email
 
     r = _resources()
-    cfg = load_config()
+    bundle = r["bundle"]
+    cfg = r["config"]
     try:
         emails = email_source.fetch_unread(int(req.limit), cfg)
     except Exception as exc:  # connector/credentials problem — surface, don't crash
@@ -176,8 +193,17 @@ def inbox_sync(req: SyncReq):
     for e in emails:
         event_bus.publish(parse_email(e))
 
+    disable_auto = _disable_auto_for_bundle(bundle)
+
     def _process(email: IncomingEmail) -> dict:
-        item = router.route_email(email, r["transactions"], r["policy_store"], r["retriever"], cfg)
+        item = router.route_email(
+            email,
+            r["transactions"],
+            r["policy_store"],
+            r["retriever"],
+            cfg,
+            disable_auto_for_bundle=disable_auto,
+        )
         queue_store.upsert(item)
         return item
 
@@ -214,7 +240,8 @@ def inbox_route_one(req: RouteOneReq):
     if not req.body.strip():
         raise HTTPException(400, "body is required")
     r = _resources()
-    cfg = load_config()
+    bundle = r["bundle"]
+    cfg = r["config"]
     email = parse_email(IncomingEmail(
         id=f"manual-{abs(hash(req.body)) % 10**8}",
         subject=req.subject,
@@ -222,7 +249,14 @@ def inbox_route_one(req: RouteOneReq):
         from_addr="pasted@manual",
     ))
     try:
-        item = router.route_email(email, r["transactions"], r["policy_store"], r["retriever"], cfg)
+        item = router.route_email(
+            email,
+            r["transactions"],
+            r["policy_store"],
+            r["retriever"],
+            cfg,
+            disable_auto_for_bundle=_disable_auto_for_bundle(bundle),
+        )
         queue_store.upsert(item)
     except Exception as exc:
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
