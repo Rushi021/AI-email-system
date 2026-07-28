@@ -32,30 +32,31 @@ You land on the **✉️ Assistant** page; the left nav switches between the fiv
 | **✉️ Assistant** (landing) | Paste a customer email → click **Suggest a reply**. Expand **"How accurate is this reply?"** for on-demand RAGAS scoring (faithfulness / relevancy / context precision). |
 | **📥 Inbox** | **Sync inbox** to fetch unread mail from the connected source (MCP email server, or offline demo mode) and route every message through the pipeline; or paste a single email to route it. Each email is classified **auto-reply / needs-review / escalate / ignore** and dropped into the queue. |
 | **🗂️ Review** | The human-action dashboard: Escalations · Needs review · Auto · Audit sample · Done. Send/edit/dismiss, flag hallucinations, and confirm escalation audits — every action writes a `feedback_events` row. |
-| **⚙️ Settings** | Upload a policy document; manage example replies; LLM providers; email connector; automation thresholds; **evaluation gates** (faithfulness gate, disagreement/audit sample rates); **storage** (local / Postgres / S3 / Azure / GCS). |
+| **⚙️ Settings** | **Company data** (policy + transactions + optional tickets: preview, map, dry-run, activate); example replies; LLM providers; email connector; automation thresholds; **evaluation gates**; **storage** (local / Postgres / S3 / Azure / GCS). |
 | **📊 Evaluation** | Two unblended panels: Response Quality (RAGAS) and System Reliability (human feedback with n + Wilson CIs). |
 
-No API key yet? The app still opens — configure a provider on the Settings page first,
-then use the Assistant.
+No API key yet? The app still opens — configure a provider on the Settings page first.
+Before Assistant / Inbox can generate, activate **company data** (policy + transactions)
+in Settings. Sample fixtures live under `tests/fixtures/northpeak/` for local trials.
 
 ```
 incoming email
       │
       ├─► PolicyStore — format-aware ingest + hybrid retrieve (BM25 + embeddings + RRF)
-      │                 cache via BlobStore (policy_index/*)
+      │                 cache via BlobStore (policy_index/{hash}/*)
       ├─► intent scope — categories from the loaded policy
-      ├─► TicketRetriever — TF-IDF (dataset corpus + user_examples)
-      └─► transaction lookup — data/transactions.json
+      ├─► TicketRetriever — TF-IDF (ticket corpus + user_examples)
+      └─► transaction lookup — active company bundle
       ▼
    generator ──► reply + cited_rules + structured remedy
       ▼
    RAGAS evaluator ──► faithfulness · answer relevancy · context precision
-                       + dual-pass retrieval disagreement (sampled)
-                       + deterministic diagnostics (non-blended)
+                       + dual-pass retrieval disagreement (forced before AUTO)
+                       + deterministic + per-email data-quality flags
                        ──► ragas_scores (StructuredStore)
       ▼
    router ──► AUTO / REVIEW / ESCALATE / IGNORE
-              hard gate: faithfulness < gate OR disagreement OR scoring error → never AUTO
+              hard gate: faithfulness < gate OR disagreement OR scoring error OR flags → never AUTO
       ▼
    queue (StructuredStore) ──► Review dashboard
                                   │  Send / edit / dismiss / flag hallucination / audit
@@ -65,6 +66,7 @@ incoming email
                                                  calibration (every rate: n + Wilson CI)
 
 Storage (pluggable): StructuredStore + BlobStore — default local; opt-in Postgres / S3 / Azure / GCS
+Company data: uploaded via Settings → versioned under company/ in BlobStore
 ```
 
 ## 1. Quick start (batch pipeline)
@@ -91,62 +93,40 @@ Azure / GCS from Settings; secrets stay in `.env`.
 
 ## 2. The core design principle: company-agnostic code
 
-**Everything company-specific lives in `data/`. Nothing in `src/` names a company, a product,
-or a rule.** We simulate one fictional company — *NorthPeak Outdoor Gear*, an online outdoor
-retailer — but if you replaced `data/policy.pdf`, `data/transactions.json`, and
-`data/dataset.json` with another company's files, every line of `src/`, `pipeline.py`,
-and `api.py` would work unchanged:
+**Everything company-specific is uploaded through Settings and stored as a versioned
+company-data bundle. Nothing in `src/` names a company, a product, or a rule.**
 
-- `src/policy_store.py` ingests **any** PDF/DOCX/Markdown/txt policy, extracts structured
-  rules (id / condition / outcome / category / effective date), caches by section content-hash,
-  and serves hybrid BM25 + local embedding retrieval with RRF (optional cross-encoder rerank).
-- `src/retriever.py` fits TF-IDF over whatever ticket corpus it is given (eval `dataset.json`
-  corpus split plus optional production `user_examples.json` in the live UI).
-- `src/schema.py` uses a generic transaction shape (`extra="allow"`, so extra columns from a
-  different company's export ride along without code changes).
+Activate a policy document (PDF/DOCX/MD/txt), a transactions export (CSV/TSV/XLSX/JSON),
+and optionally past tickets. Column mapping is canonical-keyed; dry-run returns
+`READY` / `DEGRADED` / `BLOCKED` before anything is activated. Failed uploads leave
+the prior active version serving.
+
+- `src/company_data/` — preview, map, dry-run, normalize, activate, rollback.
+- `src/policy_store.py` ingests **any** supported policy, extracts structured rules
+  (including `depends_on` for per-email quality gates), and caches under
+  `policy_index/{hash}/*`.
+- `src/retriever.py` fits TF-IDF over the activated ticket corpus (plus optional
+  production `user_examples` in the live UI). Thin corpora disable neighbor retrieval
+  rather than inventing near-random tone matches.
+- `src/schema.py` uses a generic transaction shape (`extra="allow"`).
 - Every prompt in `src/prompts.py` injects policy text, transaction data and past replies at
   runtime; none contains a company fact. Past tickets teach **voice/tone only** and must never
   override policy.
 
 That is the point of the design: this is a *product*, not a demo hard-coded to one dataset.
 
-## 3. Dataset — how it was built and why it's representative
+## 3. Sample fixtures (optional)
 
-The dataset is synthetic but **structurally faithful to real support data**, built in three
-linked layers (the same three exports any e-commerce company could produce):
+A fictional outdoor-retailer fixture set lives under `tests/fixtures/northpeak/` for
+tests and local trials. Upload those files through Settings → Company data, or leave
+copies in `data/` for a one-time legacy bootstrap when no active bundle exists.
+Production deployments should upload their own policy and order export.
 
-1. **`data/policy.pdf`** — 15 numbered rules rendered to a real PDF by
-   `scripts/build_policy_pdf.py`. Every rule states **both the grant condition and the
-   explicit denial condition** (e.g. R1.1: ≤30 days unworn → full refund; worn → no refund).
-   That two-sided structure is deliberate: a compliance judge can only distinguish right from
-   wrong replies if the document itself defines both sides. It also includes two escalation
-   rules (R6: disputed value > $200 → human agent; R7: 3+ returns in 90 days → manual review)
-   because knowing *when not to answer autonomously* is a core part of real support quality.
-2. **`data/transactions.json`** — 24 orders that deliberately vary every dimension the policy
-   branches on: on-time/late/lost/damaged delivery, final-sale vs not, cancelled before vs
-   after shipment, inside vs outside the warranty window, prices above and below the $200
-   escalation threshold, and one customer with 4 recent returns to exercise R7.
-3. **`data/dataset.json`** — 24 (incoming email, actual reply) pairs, each tied to a real
-   `order_id`. The replies were written in a consistent "house voice" (named agents, warm but
-   concrete, always states the remedy and the next step) so there is a real style for the
-   generator to learn. Emails vary in sentiment (polite/neutral/frustrated) and include
-   realistic complications: a sympathetic gift story attached to a non-negotiable final-sale
-   denial, a customer demanding a refund where policy prescribes a replacement, a "lost"
-   package the carrier hasn't confirmed.
+Dev-only PDF helper: `scripts/dev/build_policy_pdf.py`.
 
-**Split:** 18 tickets are tagged `corpus` (the retrieval pool) and 6 `holdout` (the test
-set). The retriever is fitted **only on the corpus split**, so the holdout can never leak
-into generation. Holdout tickets are genuinely different scenarios — different orders,
-different complications — not reworded corpus tickets; each targets a distinct policy
-branch, including both escalation rules and the unconfirmed-duplicate-charge branch that has
-no corpus example at all.
-
-Why representative: returns, shipping problems, cancellations, warranty claims and billing
-disputes are the canonical intent taxonomy of e-commerce support; the categories, the
-policy-conditioned outcomes and the emotional range mirror what a real inbox contains, and
-because every ticket is grounded in a transaction record, the "correct" answer is *decidable*
-from the policy + transaction alone — which is what Tier-1 RAGAS faithfulness checks against
-retrieved context, and what human reviewers later confirm or correct in Tier-2 feedback.
+**Holdout is never retrievable.** Ticket `split` defaults to `corpus`. A ticket becomes
+holdout only when a split column is explicitly mapped *and* carries a recognized holdout
+label. Unrecognized values fall back to `corpus`.
 
 **No hand-labeled answer key and no synthetic control replies.** Accuracy trust comes from
 organic Review-dashboard feedback (`feedback_events`) plus reference-free RAGAS metrics.
@@ -277,16 +257,17 @@ inbox (MCP email server | offline demo)  ── src/email_source.py ──► In
 ## 7. Repo map
 
 ```
-scripts/build_policy_pdf.py   renders the policy text into data/policy.pdf (one-time)
-data/                         ALL company-specific inputs (swap these for a new company)
-src/policy_ingest.py          PDF/DOCX/Markdown/txt → sections
-src/policy_store.py           hybrid BM25 + embeddings + RRF (BlobStore index cache)
-src/intent.py                 retrieval intent scoping from loaded policy categories
-src/retriever.py              TF-IDF over past-ticket corpus (+ user_examples in live UI)
-src/generator.py              policy + precedent → reply + cited_rules + remedy
-src/ragas_evaluator.py        Tier-1 faithfulness / relevancy / context precision + disagreement
-src/evaluator.py              RAGAS orchestration + deterministic diagnostics
-src/reliability.py            Tier-2 rates (Wilson CI) + calibration
+scripts/dev/build_policy_pdf.py  optional fixture PDF helper
+tests/fixtures/northpeak/        sample policy + txn + tickets for local trials
+src/company_data/                upload preview · dry-run · normalize · activate · rollback
+src/policy_ingest.py             PDF/DOCX/Markdown/txt → sections + depends_on
+src/policy_store.py              hybrid BM25 + embeddings + RRF (versioned BlobStore index)
+src/intent.py                    retrieval intent scoping from loaded policy categories
+src/retriever.py                 TF-IDF over past-ticket corpus (+ user_examples in live UI)
+src/generator.py                 policy + precedent → reply + cited_rules + remedy
+src/ragas_evaluator.py           Tier-1 faithfulness / relevancy / context precision + disagreement
+src/evaluator.py                 RAGAS orchestration + deterministic diagnostics
+src/reliability.py               Tier-2 rates (Wilson CI) + calibration
 src/feedback.py               Review-action labels → feedback_events
 src/validate_metric.py        reliability report from feedback_events
 src/storage/                  pluggable StructuredStore + BlobStore (local default)

@@ -8,7 +8,8 @@ Two unblended scores drive trust:
 1. **Tier 1 — RAGAS response quality** (automated, every reply)
 2. **Tier 2 — System reliability** (human Review feedback only)
 
-Company-specific facts live only in `data/`. Code in `src/` is company-agnostic.
+Company-specific facts are uploaded through Settings and stored as a versioned
+company-data bundle (BlobStore). Code in `src/` is company-agnostic.
 
 ---
 
@@ -21,6 +22,30 @@ The UI is a React + Vite app (`web/`) over a thin FastAPI wrapper (`api.py`) aro
 | **Live** | UI Inbox → Review (`/api/inbox/*`, `/api/queue/*`) | fetch → parse → event bus → classify → generate → RAGAS → route → queue → feedback |
 | **Batch** | `python pipeline.py --all` | holdout generate → RAGAS evaluate → reliability report (no classifier/router/queue) |
 | **Assist** | UI Assistant (`/api/assistant/*`) | `generate_reply` only; optional on-demand RAGAS |
+
+---
+
+## Company-data ingestion (setup)
+
+```
+upload (policy / transactions / tickets)
+        │
+        ▼
+preview → map columns → dry_run (READY | DEGRADED | BLOCKED)
+        │
+        ▼  (only READY, or confirmed DEGRADED)
+normalize + versioned BlobStore write
+        │
+        ▼
+build PolicyStore index (policy_index/{hash}/*) + TicketRetriever
+        │
+        ▼
+atomic activate → company/active.json  (failed uploads change nothing)
+```
+
+Policy + transactions are required. Ticket history is optional (tone only).
+Per-email `unverifiable:*` flags gate AUTO only when a used policy rule depends on
+a field marked missing on that transaction — never file-wide.
 
 ---
 
@@ -39,18 +64,19 @@ event_bus.publish → drain   # retry ×3 → dead_letter
 classifier.classify         # LLM · other → IGNORE (skip generate/eval)
         │
         ▼
-detect_order_id + intent    # transactions.json · policy category scope
+detect_order_id + intent    # active transactions · policy category scope
         │
-        ├─► PolicyStore     # BM25 + embeddings + RRF (BlobStore cache)
+        ├─► PolicyStore     # BM25 + embeddings + RRF (versioned BlobStore cache)
         ├─► TicketRetriever # TF-IDF (corpus + user_examples in live UI)
-        └─► transaction
+        └─► transaction (+ per-record _missing_fields)
         ▼
 generator.generate_reply    # reply + cited_rules + structured remedy
         │
         ▼
 ragas_evaluator             # faithfulness · relevancy · context precision
-  + dual-pass disagreement (sampled)
+  + dual-pass disagreement (forced before AUTO)
   + deterministic diagnostics (non-blended)
+  + per-email data-quality flags
   → ragas_scores table
         │
         ▼
@@ -76,7 +102,8 @@ Never AUTO when any of:
 - `faithfulness < FAITHFULNESS_GATE` (default `0.7`)
 - `retrieval_disagreement == true`
 - `scoring_error` non-empty
-- any deterministic flag (placeholders, length, absolute claims, missing order id)
+- disagreement unchecked (fail closed — forced check before AUTO)
+- any deterministic / per-email data-quality flag
 
 `retrieval_disagreement` is nullable when sampling skips the check — store
 `disagreement_checked` separately; never treat “not checked” as agreement.
@@ -106,7 +133,7 @@ remedy field diffs classify `EDITED_MAJOR` vs `EDITED_MINOR` (not another LLM ju
 ## Batch pipeline
 
 ```
-data/{policy, transactions, dataset}
+active company bundle (normalized policy · txn · tickets)
         │
         ▼
 PolicyStore + TicketRetriever(fit corpus only)
@@ -131,7 +158,8 @@ validate_metric (feedback_events → reliability) → results/validation_report.
 | Blob | `get_blob_store()` | Local filesystem | S3 / Azure / GCS / Postgres |
 
 Tables (local files under `results/`): `queue`, `event_bus`, `feedback_events`,
-`ragas_scores`, `user_examples`. Policy index cache: BlobStore `policy_index/*`.
+`ragas_scores`, `user_examples`. Policy index cache: BlobStore `policy_index/{hash}/*`.
+Company data: BlobStore `company/versions/*`, `company/active.json`.
 
 ---
 
@@ -139,11 +167,12 @@ Tables (local files under `results/`): `queue`, `event_bus`, `feedback_events`,
 
 | Module | Role |
 |---|---|
+| `src/company_data/` | Upload preview · dry-run · normalize · activate · rollback |
 | `src/email_source.py` | Inbox connector (`demo` \| `mcp`) |
 | `src/email_parser.py` | Normalize body + auth signal |
 | `src/event_bus.py` | Ingestion queue, retry ×3, dead-letter |
 | `src/classifier.py` | LLM triage; `other` → IGNORE |
-| `src/policy_ingest.py` | PDF/DOCX/MD/txt → sections |
+| `src/policy_ingest.py` | PDF/DOCX/MD/txt → sections + `depends_on` |
 | `src/policy_store.py` | Hybrid BM25 + embeddings + RRF |
 | `src/intent.py` | Retrieval scoping from policy categories |
 | `src/retriever.py` | TF-IDF past tickets |

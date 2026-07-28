@@ -141,7 +141,7 @@
     <h1>AI Email Suggested-Response System</h1>
     <p class="lede">
       Repo-accurate map of the Hiver Open Challenge submission: RAG replies grounded in
-      company data (<code>data/</code>), scored with <strong>two unblended numbers</strong> —
+      an uploaded <strong>company-data bundle</strong>, scored with <strong>two unblended numbers</strong> —
       RAGAS response quality (Tier&nbsp;1) and human-feedback reliability (Tier&nbsp;2) — then
       routed AUTO / REVIEW / ESCALATE / IGNORE. Nothing company-specific lives in
       <code>src/</code>.
@@ -185,6 +185,12 @@
 "lineColor":"#5b6c84","clusterBkg":"#0d141f","clusterBorder":"#23324a","tertiaryColor":"#0d141f"},
 "flowchart":{"htmlLabels":true,"useMaxWidth":false,"padding":16,"nodeSpacing":28,"rankSpacing":40,"curve":"basis"}}}%%
 flowchart TB
+  subgraph S0["00 · COMPANY DATA"]
+    upload["Settings upload\npolicy · txn · tickets"]
+    ingest["company_data\npreview → dry_run → normalize"]
+    active[("active company bundle\ncompany/active.json")]
+  end
+
   subgraph S1["01 · INGEST"]
     inbox["email_source.fetch_unread\ndemo | mcp"]
   end
@@ -206,7 +212,7 @@ flowchart TB
     intent["intent scope\npolicy categories"]
     policy["PolicyStore\nBM25 + embeddings + RRF"]
     tickets["TicketRetriever\nTF-IDF corpus + examples"]
-    txn[("transactions.json")]
+    txn[("active transactions\n+ missing_fields")]
   end
 
   subgraph S6["06 · GENERATE"]
@@ -215,8 +221,8 @@ flowchart TB
 
   subgraph S7["07 · RAGAS TIER-1"]
     ragas["ragas_evaluator\nfaithfulness · relevancy · context precision"]
-    disagree["dual-pass disagreement\nsampled"]
-    det["deterministic diagnostics\nnon-blended flags"]
+    disagree["dual-pass disagreement\nforced before AUTO"]
+    det["deterministic + per-email\ndata-quality flags"]
   end
 
   subgraph S8["08 · ROUTE"]
@@ -235,6 +241,10 @@ flowchart TB
   events[("feedback_events")]
   rel["reliability\nn + Wilson CI"]
 
+  upload --> ingest --> active
+  active --> policy
+  active --> tickets
+  active --> txn
   inbox --> parse --> bus --> classify
   classify -- "other → IGNORE" --> decide
   classify -- support --> intent
@@ -257,10 +267,10 @@ flowchart TB
   classDef store fill:#0f2a20,stroke:#3fbf8b,stroke-width:1.4px,color:#c9f3e2;
   classDef gate fill:#2a1f0c,stroke:#e0a344,stroke-width:1.4px,color:#f6e0b8;
   classDef ext stroke-dasharray:5 4,stroke:#7d8ba0;
-  class gen,classify,ragas,disagree ai;
-  class queue,scores,events,txn store;
+  class gen,classify,ragas,disagree,ingest ai;
+  class queue,scores,events,txn,active store;
   class decide,det gate;
-  class inbox ext;
+  class inbox,upload ext;
 </pre>
     </div>
   </div>
@@ -277,7 +287,8 @@ flowchart TB
 "lineColor":"#5b6c84","clusterBkg":"#0d141f","clusterBorder":"#23324a","tertiaryColor":"#0d141f"},
 "flowchart":{"htmlLabels":true,"useMaxWidth":false,"padding":16,"nodeSpacing":28,"rankSpacing":40,"curve":"basis"}}}%%
 flowchart LR
-  data[("data/\npolicy · txn · dataset")]
+  data[("active company bundle\npolicy · txn · tickets")]
+  ingest["company_data\npreview · dry_run · normalize"]
   ps["PolicyStore\ningest + hybrid index"]
   tr["TicketRetriever\nfit corpus only"]
   gen["generate_reply\nholdout tickets"]
@@ -287,13 +298,14 @@ flowchart LR
   val["validate_metric\nreliability report"]
   out3[("validation_report.json")]
 
+  ingest --> data
   data --> ps --> gen
   data --> tr --> gen
   gen --> out1 --> ev --> out2 --> val --> out3
 
   classDef ai fill:#2a1e0c,stroke:#e0912f,stroke-width:1.4px,color:#f6d9a8;
   classDef store fill:#0f2a20,stroke:#3fbf8b,stroke-width:1.4px,color:#c9f3e2;
-  class gen,ev ai;
+  class gen,ev,ingest ai;
   class data,out1,out2,out3 store;
 </pre>
     </div>
@@ -372,7 +384,7 @@ flowchart LR
             categories (<code>src/intent.py</code> / generator mapping) so retrieval is scoped —
             plus always-on <code>global</code> escalation rules. Region / as-of date come from
             the loaded policy when available.</p>
-          <div class="chips"><span class="chip">transactions.json</span><span class="chip">category scope</span><span class="chip">global rules</span></div>
+          <div class="chips"><span class="chip">active transactions</span><span class="chip">category scope</span><span class="chip">global rules</span></div>
         </div>
       </div>
 
@@ -521,9 +533,10 @@ flowchart LR
         <div class="k">Storage</div>
         <h4>Pluggable StructuredStore + BlobStore</h4>
         <p>Default local SQLite + filesystem (<code>src/storage/</code>). Opt-in Postgres /
-          S3 / Azure / GCS from Settings. Company source files stay swap-the-files in
-          <code>data/</code>; operational data (queue, feedback, scores, index cache) goes
-          through the adapters. Nothing outside <code>src/storage/</code> imports
+          S3 / Azure / GCS from Settings. Company source files are uploaded via Settings
+          and versioned under <code>company/</code> in BlobStore; operational data (queue,
+          feedback, scores, index cache) goes through the adapters. Nothing outside
+          <code>src/storage/</code> imports
           <code>sqlite3</code> / <code>boto3</code> / Azure / GCS SDKs.</p>
       </div>
       <div class="cc rise" style="animation-delay:.04s">
@@ -542,9 +555,9 @@ flowchart LR
       </div>
       <div class="cc rise" style="animation-delay:.12s">
         <div class="k">Company-agnostic</div>
-        <h4>Everything company-specific in data/</h4>
-        <p>Swap <code>policy.pdf</code>, <code>transactions.json</code>,
-          <code>dataset.json</code> — zero code changes. No hardcoded rule IDs, product
+        <h4>Everything company-specific is uploaded</h4>
+        <p>Activate a policy document, transactions export, and optional ticket history
+          through Settings — zero code changes. No hardcoded rule IDs, product
           names, or remedies in <code>src/</code>, prompts, or the router.</p>
       </div>
     </div>

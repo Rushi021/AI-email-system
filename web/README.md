@@ -26,9 +26,10 @@ FastAPI serves `web/dist` when it exists (with SPA fallback for deep links); the
 Vite dev server is only for hot-reload development.
 
 The Assistant and Inbox pages need an LLM key (set one in `.env` or on the
-Settings page) to generate; the read-only pages (Review, Evaluation) work without
-one. The `demo` email source is an empty offline inbox — point `email_source` at
-`mcp` (Settings) to fetch real mail.
+Settings page) **and** an activated company-data bundle (Settings → Company data:
+policy + transactions). Review and Evaluation work without an LLM key. The
+`demo` email source is an empty offline inbox — point `email_source` at `mcp`
+(Settings) to fetch real mail.
 
 ## Design
 
