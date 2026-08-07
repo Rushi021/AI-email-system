@@ -432,10 +432,3 @@ Details of what shipped:
 the metric this submission validates. The hard part of autonomous support isn't generating
 text — it's *knowing when the text is safe to send*. That is exactly what was built here.
 
-## 9. AI tools disclosure
-
-This submission was built with Claude Code (Claude Fable 5) doing the implementation under
-the direction of a human-authored design brief: architecture, dataset design, metric design
-and validation strategy were specified up front; the agent wrote the code, synthesized the
-dataset content, and verified the pipeline end-to-end. LLM calls at runtime use the
-Anthropic or OpenAI API via the pluggable client in `src/llm_client.py`.
